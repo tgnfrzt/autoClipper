@@ -748,21 +748,29 @@
           </fieldset>
 
           <fieldset>
-            <legend>🤖 Discord Review Bot (Reaction-to-Publish)</legend>
+            <legend>🤖 Discord Integration (Webhook Recommended — No Bot Required)</legend>
+            <div class="field" style="margin-bottom:0.85rem;">
+              <label for="cfg_DISCORD_WEBHOOK_URL">Discord Webhook URL (Recommended — 1-Click Setup)</label>
+              <div class="input-with-toggle">
+                <input id="cfg_DISCORD_WEBHOOK_URL" name="DISCORD_WEBHOOK_URL" type="password" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+                <button type="button" class="sm toggle-secret" data-target="cfg_DISCORD_WEBHOOK_URL" aria-pressed="false">Show</button>
+              </div>
+              <span class="hint">In Discord: Channel Settings (⚙️) → Integrations → Webhooks → New Webhook → Copy Webhook URL. Clips include 1-click Post All / YouTube / TikTok / Instagram / Reject links!</span>
+            </div>
             <div class="form-grid">
               <div class="field">
-                <label for="cfg_DISCORD_BOT_TOKEN">Discord Bot Token</label>
+                <label for="cfg_DISCORD_BOT_TOKEN">Optional Discord Bot Token (Only for emoji reactions)</label>
                 <div class="input-with-toggle">
                   <input id="cfg_DISCORD_BOT_TOKEN" name="DISCORD_BOT_TOKEN" type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
                   <button type="button" class="sm toggle-secret" data-target="cfg_DISCORD_BOT_TOKEN" aria-pressed="false">Show</button>
                 </div>
               </div>
               <div class="field">
-                <label for="cfg_DISCORD_CHANNEL_ID">Target Channel ID</label>
+                <label for="cfg_DISCORD_CHANNEL_ID">Optional Bot Channel ID</label>
                 <input id="cfg_DISCORD_CHANNEL_ID" name="DISCORD_CHANNEL_ID" type="text" inputmode="numeric" autocorrect="off" spellcheck="false" />
               </div>
               <div class="field">
-                <label for="cfg_DISCORD_USER_ID">Target User ID (Optional DM)</label>
+                <label for="cfg_DISCORD_USER_ID">Optional Bot User ID (DM)</label>
                 <input id="cfg_DISCORD_USER_ID" name="DISCORD_USER_ID" type="text" inputmode="numeric" autocorrect="off" spellcheck="false" />
               </div>
               <div class="field">
@@ -773,7 +781,7 @@
             <div class="toolbar-group" style="margin-top:0.75rem;">
               <label class="check-row"><input type="checkbox" id="cfg_AUTO_DELETE_ON_REJECT" name="AUTO_DELETE_ON_REJECT" /> Auto-delete local files when ❌ rejected</label>
               <button type="button" id="btnTestDiscord">📨 Send Test Message to Discord</button>
-              <span class="hint">Reactions: ✅ Post All • ▶️ YouTube • 🎵 TikTok • 📸 Instagram • ❌ Delete</span>
+              <span class="hint">Webhook: 1-Click Links • Bot: ✅ / ▶️ / 🎵 / 📸 / ❌ Reactions</span>
             </div>
           </fieldset>
 
@@ -1282,10 +1290,18 @@
       document.getElementById('autoposterImportBanner').hidden = !cfg.status.autoposter_detected;
 
       const disc = cfg.status.discord;
-      document.getElementById('dotDiscord').className = 'dot ' + (disc.connected ? 'ok' : (disc.has_token ? 'warn' : 'err'));
-      document.getElementById('lblDiscord').textContent = disc.connected
-        ? `Discord: ${disc.bot_user}`
-        : (disc.has_token ? 'Discord: Connecting/Error' : 'Discord: Not Configured');
+      document.getElementById('dotDiscord').className = 'dot ' + (disc.ready ? 'ok' : (disc.has_token ? 'warn' : 'err'));
+      if (disc.webhook_configured && disc.connected) {
+        document.getElementById('lblDiscord').textContent = `Discord: Webhook + ${disc.bot_user}`;
+      } else if (disc.webhook_configured) {
+        document.getElementById('lblDiscord').textContent = 'Discord: Webhook Active';
+      } else if (disc.connected) {
+        document.getElementById('lblDiscord').textContent = `Discord: ${disc.bot_user}`;
+      } else if (disc.has_token) {
+        document.getElementById('lblDiscord').textContent = 'Discord: Connecting/Error';
+      } else {
+        document.getElementById('lblDiscord').textContent = 'Discord: Not Configured';
+      }
 
       document.getElementById('ytStatusHint').textContent = cfg.status.youtube_ready
         ? '✅ Authorized token active'

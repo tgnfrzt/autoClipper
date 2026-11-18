@@ -53,12 +53,15 @@ app.include_router(ai_router)
 
 @app.get("/api/health")
 def health() -> dict:
+    d_stat = discord_bot.get_status()
     return {
         "status": "ok",
         "app": settings.APP_NAME,
         "engine_enabled": settings.ENGINE_ENABLED,
         "vlm_healthy": vision_manager.is_server_healthy(),
-        "discord_connected": discord_bot.get_status()["connected"],
+        "discord_ready": d_stat["ready"],
+        "discord_mode": d_stat["mode"],
+        "discord_connected": d_stat["connected"],
     }
 
 

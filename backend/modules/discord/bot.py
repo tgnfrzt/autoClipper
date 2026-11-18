@@ -4,6 +4,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 import discord
+import httpx
 
 from backend.core.config import settings
 from backend.core.database import get_clip_by_discord_message, get_db, upsert_streamer
@@ -27,8 +28,9 @@ ALL_REVIEW_REACTIONS = (
 
 class DiscordClipBotService:
     """
-    Discord Bot that sends every captured clip to the configured channel/DM
-    and publishes or deletes clips based on emoji reactions.
+    Hybrid Discord integration supporting:
+    1. Discord Webhook URL (Zero setup — sends clip + 1-click Publish/Reject links & updates message live)
+    2. Optional Discord Bot Token (Adds emoji reaction controls & !status / !clip / !add commands)
     """
 
     def __init__(self) -> None:
@@ -44,22 +46,36 @@ class DiscordClipBotService:
     def attach_stream_manager(self, manager: Any) -> None:
         self._stream_manager = manager
 
+    def has_webhook(self) -> bool:
+        url = (settings.DISCORD_WEBHOOK_URL or "").strip()
+        return url.startswith("https://") and "/api/webhooks/" in url
+
+    def _webhook_base_url(self) -> str:
+        return (settings.DISCORD_WEBHOOK_URL or "").strip().split("?")[0].rstrip("/")
+
     def get_status(self) -> Dict[str, Any]:
+        wh = self.has_webhook()
+        mode = "webhook" if wh else ("bot" if self._connected else "none")
+        if wh and self._connected:
+            mode = "webhook+bot"
         return {
+            "webhook_configured": wh,
             "has_token": bool(settings.DISCORD_BOT_TOKEN),
             "channel_id": settings.DISCORD_CHANNEL_ID,
             "user_id": settings.DISCORD_USER_ID,
             "connected": self._connected,
             "bot_user": self._bot_user,
+            "mode": mode,
+            "ready": wh or self._connected,
             "message_intent_enabled": self._message_intent_enabled,
             "last_error": self._last_error,
         }
 
     async def start_or_restart(self) -> None:
+        self._last_error = ""
         await self.stop()
         token = (settings.DISCORD_BOT_TOKEN or "").strip()
         if not token:
-            self._last_error = ""
             return
         self._task = asyncio.create_task(self._run_bot(token))
 
@@ -117,14 +133,12 @@ class DiscordClipBotService:
                 break
             except discord.errors.PrivilegedIntentsRequired:
                 self._last_error = "Message Content Intent disabled in Discord Dev Portal; running reaction-only mode."
-                print(f"[DiscordBot] {self._last_error}")
                 continue
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 self._connected = False
                 self._last_error = str(exc)
-                print(f"[DiscordBot] Error: {exc}")
                 break
 
     async def _resolve_destinations(self) -> List[Any]:
@@ -151,39 +165,61 @@ class DiscordClipBotService:
         return targets
 
     async def send_test_message(self) -> Dict[str, Any]:
-        if not self._connected or not self._client:
-            return {"ok": False, "error": self._last_error or "Discord bot is not connected yet."}
-        targets = await self._resolve_destinations()
-        if not targets:
-            return {"ok": False, "error": "No valid DISCORD_CHANNEL_ID or DISCORD_USER_ID reachable."}
-        for t in targets:
-            await t.send(
-                embed=discord.Embed(
-                    title="⚡ GTA VI AI AutoClipper Connected!",
-                    description=(
-                        "Clips will appear here automatically when chat + AI vision detect a viral moment.\n\n"
-                        "**Reactions:**\n"
-                        f"{REACTION_APPROVE_ALL} Post to ALL configured platforms\n"
-                        f"{REACTION_YOUTUBE} YouTube Shorts only\n"
-                        f"{REACTION_TIKTOK} TikTok only\n"
-                        f"{REACTION_INSTAGRAM} Instagram Reels only\n"
-                        f"{REACTION_REJECT} Reject & delete clip"
-                    ),
-                    color=0x6366F1,
-                )
-            )
-        return {"ok": True, "sent_to": len(targets)}
+        sent_count = 0
+        errors: List[str] = []
 
-    async def send_clip_for_review(self, clip: Dict[str, Any]) -> Optional[str]:
-        if not self._connected or not self._client:
-            return None
-        targets = await self._resolve_destinations()
-        if not targets:
-            return None
+        if self.has_webhook():
+            try:
+                payload = {
+                    "username": "GTA VI AI AutoClipper",
+                    "embeds": [
+                        {
+                            "title": "⚡ GTA VI AI AutoClipper Webhook Connected!",
+                            "description": (
+                                "New clips will arrive here automatically with the rendered 9:16 video "
+                                "and 1-click **Post All / YouTube / TikTok / Instagram / Reject** action links."
+                            ),
+                            "color": 0x6366F1,
+                        }
+                    ],
+                }
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    r = await client.post(f"{self._webhook_base_url()}?wait=true", json=payload)
+                    if r.status_code in (200, 204):
+                        sent_count += 1
+                    else:
+                        errors.append(f"Webhook HTTP {r.status_code}: {r.text[:120]}")
+            except Exception as exc:
+                errors.append(f"Webhook error: {exc}")
 
-        raw_path = clip.get("rendered_path") or clip.get("raw_path") or ""
-        attach_path = await asyncio.to_thread(ensure_discord_attachable_mp4, raw_path)
+        if self._connected and self._client:
+            targets = await self._resolve_destinations()
+            for t in targets:
+                try:
+                    await t.send(
+                        embed=discord.Embed(
+                            title="⚡ GTA VI AI AutoClipper Bot Connected!",
+                            description=(
+                                "Clips will appear here automatically.\n"
+                                f"{REACTION_APPROVE_ALL} All • {REACTION_YOUTUBE} YouTube • "
+                                f"{REACTION_TIKTOK} TikTok • {REACTION_INSTAGRAM} Instagram • {REACTION_REJECT} Delete"
+                            ),
+                            color=0x6366F1,
+                        )
+                    )
+                    sent_count += 1
+                except Exception as exc:
+                    errors.append(f"Bot send error: {exc}")
 
+        if sent_count > 0:
+            self._last_error = ""
+            return {"ok": True, "sent_to": sent_count, "mode": self.get_status()["mode"]}
+        return {
+            "ok": False,
+            "error": "; ".join(errors) or self._last_error or "Configure a Discord Webhook URL or Bot Token first.",
+        }
+
+    def _build_clip_embed_dict(self, clip: Dict[str, Any]) -> Dict[str, Any]:
         kw_raw = clip.get("chat_keywords")
         if isinstance(kw_raw, str):
             try:
@@ -193,61 +229,109 @@ class DiscordClipBotService:
         else:
             kw_list = kw_raw or []
 
-        embed = discord.Embed(
-            title=clip.get("ai_title") or f"🔥 {clip['streamer_name']} Clip",
-            description=clip.get("ai_summary") or "Hype spike detected!",
-            url=clip.get("stream_url") or None,
-            color=0x10B981,
+        base = f"http://127.0.0.1:{settings.PORT}/api/clips/{clip['id']}/quick-action"
+        action_links = (
+            f"[✅ **Post All**]({base}?action=all)  •  "
+            f"[▶️ **YouTube**]({base}?action=youtube_shorts)  •  "
+            f"[🎵 **TikTok**]({base}?action=tiktok)  •  "
+            f"[📸 **Instagram**]({base}?action=instagram)  •  "
+            f"[❌ **Reject**]({base}?action=reject)"
         )
+
+        fields: List[Dict[str, Any]] = []
         if clip.get("overlay_caption"):
-            embed.add_field(name="On-Screen Caption", value=f"**{clip['overlay_caption']}**", inline=False)
+            fields.append({"name": "On-Screen Caption", "value": f"**{clip['overlay_caption']}**", "inline": False})
         if clip.get("transcript"):
-            embed.add_field(name="Streamer Said", value=f"\"{clip['transcript'][:200]}\"", inline=False)
-        embed.add_field(name="Streamer", value=f"{clip['streamer_name']} ({clip['platform'].upper()})", inline=True)
-        embed.add_field(
-            name="Hype Score (80/20)",
-            value=f"**{clip['combined_score']}/100** (Chat {clip['chat_score']} • Vision {clip['visual_score']} • Cam {clip.get('facecam_score', 0)})",
-            inline=True,
+            fields.append({"name": "Streamer Said", "value": f"\"{clip['transcript'][:200]}\"", "inline": False})
+        fields.append({"name": "Streamer", "value": f"{clip['streamer_name']} ({clip['platform'].upper()})", "inline": True})
+        fields.append(
+            {
+                "name": "Hype Score (80/20)",
+                "value": f"**{clip['combined_score']}/100** (Chat {clip['chat_score']} • Vision {clip['visual_score']} • Cam {clip.get('facecam_score', 0)})",
+                "inline": True,
+            }
         )
-        embed.add_field(
-            name="Chat Burst",
-            value=f"{clip['chat_mps']} msg/s • {', '.join(kw_list[:5]) or 'HYPE'}",
-            inline=False,
+        fields.append(
+            {
+                "name": "Chat Burst",
+                "value": f"{clip['chat_mps']} msg/s • {', '.join(kw_list[:5]) or 'HYPE'}",
+                "inline": False,
+            }
         )
-        embed.add_field(
-            name="React to Publish",
-            value=(
-                f"{REACTION_APPROVE_ALL} All Enabled • "
-                f"{REACTION_YOUTUBE} YouTube • "
-                f"{REACTION_TIKTOK} TikTok • "
-                f"{REACTION_INSTAGRAM} Instagram • "
-                f"{REACTION_REJECT} Reject"
-            ),
-            inline=False,
-        )
-        embed.set_footer(text=f"Clip ID: {clip['id']} • Duration: {clip['duration_sec']}s")
+        fields.append({"name": "1-Click Actions (Local Dashboard)", "value": action_links, "inline": False})
+
+        return {
+            "title": clip.get("ai_title") or f"🔥 {clip['streamer_name']} Clip",
+            "description": clip.get("ai_summary") or "Hype spike detected!",
+            "url": clip.get("stream_url") or None,
+            "color": 0x10B981,
+            "fields": fields,
+            "footer": {"text": f"Clip ID: {clip['id']} • Duration: {clip['duration_sec']}s"},
+        }
+
+    async def send_clip_for_review(self, clip: Dict[str, Any]) -> Optional[str]:
+        raw_path = clip.get("rendered_path") or clip.get("raw_path") or ""
+        attach_path = await asyncio.to_thread(ensure_discord_attachable_mp4, raw_path)
+        embed_dict = self._build_clip_embed_dict(clip)
 
         first_msg_id: Optional[str] = None
         first_ch_id: Optional[str] = None
 
-        for dest in targets:
+        # 1. Discord Webhook (Primary / Zero-Bot Setup)
+        if self.has_webhook():
             try:
-                if attach_path and os.path.isfile(attach_path):
-                    msg = await dest.send(embed=embed, file=discord.File(attach_path))
-                else:
-                    msg = await dest.send(embed=embed)
+                payload_json = json.dumps(
+                    {
+                        "username": "GTA VI AI AutoClipper",
+                        "content": f"🎬 **New Clip Ready:** {clip.get('overlay_caption') or clip['streamer_name']}",
+                        "embeds": [embed_dict],
+                    }
+                )
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    if attach_path and os.path.isfile(attach_path):
+                        with open(attach_path, "rb") as f:
+                            file_bytes = f.read()
+                        resp = await client.post(
+                            f"{self._webhook_base_url()}?wait=true",
+                            data={"payload_json": payload_json},
+                            files={"file": (os.path.basename(attach_path), file_bytes, "video/mp4")},
+                        )
+                    else:
+                        resp = await client.post(
+                            f"{self._webhook_base_url()}?wait=true",
+                            json=json.loads(payload_json),
+                        )
 
-                for emoji in ALL_REVIEW_REACTIONS:
-                    try:
-                        await msg.add_reaction(emoji)
-                    except Exception:
-                        pass
-
-                if first_msg_id is None:
-                    first_msg_id = str(msg.id)
-                    first_ch_id = str(msg.channel.id)
+                    if resp.status_code in (200, 201):
+                        data = resp.json()
+                        first_msg_id = str(data.get("id") or "")
+                        first_ch_id = "webhook"
+                        self._last_error = ""
+                    else:
+                        self._last_error = f"Webhook send HTTP {resp.status_code}: {resp.text[:160]}"
             except Exception as exc:
-                self._last_error = f"Send clip error: {exc}"
+                self._last_error = f"Webhook send error: {exc}"
+
+        # 2. Optional Discord Bot (if also configured)
+        if self._connected and self._client:
+            targets = await self._resolve_destinations()
+            embed = discord.Embed.from_dict(embed_dict)
+            for dest in targets:
+                try:
+                    if attach_path and os.path.isfile(attach_path):
+                        msg = await dest.send(embed=embed, file=discord.File(attach_path))
+                    else:
+                        msg = await dest.send(embed=embed)
+                    for emoji in ALL_REVIEW_REACTIONS:
+                        try:
+                            await msg.add_reaction(emoji)
+                        except Exception:
+                            pass
+                    if not first_msg_id:
+                        first_msg_id = str(msg.id)
+                        first_ch_id = str(msg.channel.id)
+                except Exception as exc:
+                    self._last_error = f"Bot send error: {exc}"
 
         if first_msg_id:
             conn = get_db()
@@ -259,15 +343,26 @@ class DiscordClipBotService:
             conn.close()
         return first_msg_id
 
+    async def update_webhook_message_status(self, discord_message_id: str, status_text: str) -> None:
+        """Edits the webhook message content in-place to show live publish/reject status."""
+        if not self.has_webhook() or not discord_message_id:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                await client.patch(
+                    f"{self._webhook_base_url()}/messages/{discord_message_id}",
+                    json={"content": status_text[:1900]},
+                )
+        except Exception:
+            pass
+
     async def _handle_reaction(self, payload: discord.RawReactionActionEvent) -> None:
         emoji = str(payload.emoji)
         if emoji not in ALL_REVIEW_REACTIONS:
             return
-
         msg_id = str(payload.message_id)
         if msg_id in self._processing_msgs:
             return
-
         clip = get_clip_by_discord_message(msg_id)
         if not clip:
             return
@@ -310,16 +405,12 @@ class DiscordClipBotService:
                 f"⏳ Rendering **{settings.VIDEO_FORMAT_MODE}** & publishing `{clip['id']}` to: `{', '.join(platforms)}`..."
             )
             res = await asyncio.to_thread(publish_clip_to_platforms, clip["id"], platforms)
-
-            lines = []
-            for item in res["results"]:
-                plat = item.get("platform", "unknown").upper()
-                if item.get("success"):
-                    url = item.get("post_url", "")
-                    lines.append(f"✅ **{plat}**: Posted! {url}")
-                else:
-                    lines.append(f"❌ **{plat}**: {item.get('error', 'Failed')}")
-
+            lines = [
+                f"✅ **{item.get('platform', '').upper()}**: Posted! {item.get('post_url', '')}"
+                if item.get("success")
+                else f"❌ **{item.get('platform', '').upper()}**: {item.get('error', 'Failed')}"
+                for item in res["results"]
+            ]
             await status_msg.edit(content="\n".join(lines) or "Finished publishing.")
         except Exception as exc:
             print(f"[DiscordBot] Reaction handler error: {exc}")
@@ -331,16 +422,15 @@ class DiscordClipBotService:
         cmd = parts[0].lower() if parts else ""
         arg = parts[1].strip() if len(parts) > 1 else ""
 
-        if cmd == "status":
-            if self._stream_manager:
-                snap = self._stream_manager.get_dashboard_snapshot()
-                top = "\n".join(
-                    f"• **{s['display_name']}** ({s['platform']}): {s['chat_mps']} msg/s | Score `{s['combined_score']}`"
-                    for s in snap["streams"][:8]
-                )
-                await message.reply(
-                    f"📡 Watching **{snap['active_count']}** live streams | Total Chat: **{snap['total_chat_mps']} msg/s**\n{top or 'No live streams buffered yet.'}"
-                )
+        if cmd == "status" and self._stream_manager:
+            snap = self._stream_manager.get_dashboard_snapshot()
+            top = "\n".join(
+                f"• **{s['display_name']}** ({s['platform']}): {s['chat_mps']} msg/s | Score `{s['combined_score']}`"
+                for s in snap["streams"][:8]
+            )
+            await message.reply(
+                f"📡 Watching **{snap['active_count']}** live streams | Total Chat: **{snap['total_chat_mps']} msg/s**\n{top or 'No live streams buffered yet.'}"
+            )
         elif cmd == "clip" and arg and self._stream_manager:
             snap = self._stream_manager.get_dashboard_snapshot()
             match = next(

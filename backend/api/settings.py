@@ -64,6 +64,7 @@ class SettingsUpdateRequest(BaseModel):
     ANTI_FINGERPRINT: Optional[bool] = None
     WATERMARK_ALPHA: Optional[float] = None
 
+    DISCORD_WEBHOOK_URL: Optional[str] = None
     DISCORD_BOT_TOKEN: Optional[str] = None
     DISCORD_CHANNEL_ID: Optional[str] = None
     DISCORD_USER_ID: Optional[str] = None
@@ -141,6 +142,7 @@ def get_all_settings() -> Dict[str, Any]:
         "BURN_IN_CAPTIONS": settings.BURN_IN_CAPTIONS,
         "ANTI_FINGERPRINT": settings.ANTI_FINGERPRINT,
         "WATERMARK_ALPHA": settings.WATERMARK_ALPHA,
+        "DISCORD_WEBHOOK_URL": settings.DISCORD_WEBHOOK_URL,
         "DISCORD_BOT_TOKEN": settings.DISCORD_BOT_TOKEN,
         "DISCORD_CHANNEL_ID": settings.DISCORD_CHANNEL_ID,
         "DISCORD_USER_ID": settings.DISCORD_USER_ID,
@@ -177,7 +179,7 @@ def get_all_settings() -> Dict[str, Any]:
 async def update_settings(req: SettingsUpdateRequest) -> Dict[str, Any]:
     updates = {k: v for k, v in req.model_dump(exclude_unset=True).items() if v is not None}
     discord_changed = any(
-        k in updates for k in ("DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_USER_ID")
+        k in updates for k in ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_USER_ID")
     )
     if updates:
         save_settings_to_env(updates)

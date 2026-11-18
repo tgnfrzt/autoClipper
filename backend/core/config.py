@@ -177,7 +177,8 @@ class Settings:
     ANTI_FINGERPRINT: bool = _env_bool("ANTI_FINGERPRINT", True)
     WATERMARK_ALPHA: float = _env_float("WATERMARK_ALPHA", 0.9)
 
-    # Discord Bot
+    # Discord (Webhook URL recommended, or Optional Bot)
+    DISCORD_WEBHOOK_URL: str = _env_str("DISCORD_WEBHOOK_URL", "")
     DISCORD_BOT_TOKEN: str = _env_str("DISCORD_BOT_TOKEN", "")
     DISCORD_CHANNEL_ID: str = _env_str("DISCORD_CHANNEL_ID", "")
     DISCORD_USER_ID: str = _env_str("DISCORD_USER_ID", "")
@@ -230,6 +231,10 @@ def get_watermark_path() -> Optional[str]:
 
 def is_youtube_configured() -> bool:
     return os.path.isfile(settings.YOUTUBE_TOKEN_FILE)
+
+
+def is_discord_configured() -> bool:
+    return bool(settings.DISCORD_WEBHOOK_URL.strip() or settings.DISCORD_BOT_TOKEN.strip())
 
 
 def is_tiktok_configured() -> bool:
