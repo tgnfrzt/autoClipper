@@ -315,7 +315,24 @@ class StreamManagerService:
                                     f"Locked onto {state['display_name']}'s facecam ({vis['facecam_corner']}).",
                                 )
 
-                    if state.get("visual_blocked") or state["visual_score"] < 24.0:
+                    if (
+                        buf.last_error == "Could not resolve live HLS stream URL."
+                        and not buf.is_running()
+                        and (now - buf.started_at) > 45
+                    ):
+                        conn = get_db()
+                        try:
+                            with conn:
+                                conn.execute("UPDATE streamers SET is_live = 0 WHERE id = ?", (sid,))
+                        finally:
+                            conn.close()
+                        self.log_event("STREAM", f"Marked {state['display_name']} offline (stream URL ended).")
+                        buf.stop()
+                        self._buffers.pop(sid, None)
+                        self._live_state.pop(sid, None)
+                        continue
+
+                    if state.get("visual_blocked") or state["visual_score"] < 12.0:
                         combined = 0.0
                     else:
                         combined = compute_combined_score(state["chat_score"], state["visual_score"])
@@ -435,18 +452,21 @@ class StreamManagerService:
 
             self._set_job_progress(job_id, streamer_name, 72, "Rendering Smart 9:16 Gaming Split + Burned-In Caption...")
             rendered_path = ""
+            actual_facecam_corner = facecam_corner
             try:
                 render_res = await asyncio.to_thread(
                     render_clip_for_social,
                     raw_mp4,
                     clip_uid,
                     settings.VIDEO_FORMAT_MODE,
-                    facecam_corner or settings.FACECAM_POSITION,
+                    settings.FACECAM_POSITION,
                     settings.ANTI_FINGERPRINT,
                     meta["overlay_caption"],
                     streamer_name,
                 )
                 rendered_path = render_res["output_path"]
+                fc_used = str(render_res.get("facecam_used") or "")
+                actual_facecam_corner = "" if fc_used in ("", "none") else fc_used
             except Exception as exc:
                 self.log_event("WARN", f"Auto-render note for {streamer_name}: {exc}")
 
@@ -466,7 +486,7 @@ class StreamManagerService:
                 combined_score=combined_score,
                 chat_mps=chat_mps,
                 chat_keywords=chat_keywords,
-                facecam_corner=facecam_corner,
+                facecam_corner=actual_facecam_corner,
                 transcript=meta["transcript"],
                 overlay_caption=meta["overlay_caption"],
                 ai_title=meta["title"],

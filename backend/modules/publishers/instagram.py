@@ -7,31 +7,61 @@ import requests
 from backend.core.config import settings
 
 
-def upload_to_temp_hosting(video_path: str, hosting_url: str) -> Optional[str]:
+def upload_to_temp_hosting(video_path: str, hosting_url: Optional[str] = None) -> Optional[str]:
     if not os.path.isfile(video_path):
         raise FileNotFoundError(f"Video file not found: {video_path}")
-    if not hosting_url:
-        raise ValueError("REMOTE_HOSTING_URL is not configured for Instagram Reels relay.")
 
     file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
     if file_size_mb > 95.0:
         raise RuntimeError(f"Video is {file_size_mb:.1f} MB (exceeds 95 MB Instagram Reels relay limit).")
 
-    with open(video_path, "rb") as f:
-        files = {"file": (os.path.basename(video_path), f, "video/mp4")}
-        res = requests.post(f"{hosting_url.rstrip('/')}/upload_video", files=files, timeout=120)
+    errors = []
 
-    if res.status_code == 200:
-        txt = res.text.strip()
-        if txt.startswith("{"):
-            payload = res.json()
-            return payload.get("video_url") or payload.get("url")
-        return txt
-    raise RuntimeError(f"Temp hosting upload rejected (HTTP {res.status_code}): {res.text[:150]}")
+    # 1. Try user's configured REMOTE_HOSTING_URL relay first (if set)
+    if hosting_url and hosting_url.strip().startswith("http"):
+        try:
+            with open(video_path, "rb") as f:
+                files = {"file": (os.path.basename(video_path), f, "video/mp4")}
+                res = requests.post(f"{hosting_url.rstrip('/')}/upload_video", files=files, timeout=90)
+            txt = res.text.strip()
+            if res.status_code == 200 and "<html" not in txt.lower() and "coming soon" not in txt.lower():
+                if txt.startswith("{"):
+                    payload = res.json()
+                    url = payload.get("video_url") or payload.get("url")
+                    if url and url.startswith("http"):
+                        return url
+                elif txt.startswith("http"):
+                    return txt
+            errors.append(f"Primary relay HTTP {res.status_code}")
+        except Exception as exc:
+            errors.append(f"Primary relay error: {exc}")
+
+    # 2. Automatic Ephemeral Public Relay Fallbacks (needed when PythonAnywhere is inactive/404)
+    fallback_endpoints = [
+        ("litterbox", "https://litterbox.catbox.moe/resources/internals/api.php", {"reqtype": "fileupload", "time": "1h"}, "fileToUpload"),
+        ("catbox", "https://catbox.moe/user/api.php", {"reqtype": "fileupload"}, "fileToUpload"),
+    ]
+    for label, endpoint, form_data, file_field in fallback_endpoints:
+        try:
+            with open(video_path, "rb") as f:
+                res = requests.post(
+                    endpoint,
+                    data=form_data,
+                    files={file_field: (os.path.basename(video_path), f, "video/mp4")},
+                    timeout=120,
+                )
+            txt = res.text.strip()
+            if res.status_code == 200 and txt.startswith("https://") and "<html" not in txt.lower():
+                return txt
+            errors.append(f"{label} HTTP {res.status_code}: {txt[:80]}")
+        except Exception as exc:
+            errors.append(f"{label} error: {exc}")
+
+    raise RuntimeError(f"All Instagram temp hosting relays failed ({'; '.join(errors)})")
 
 
-def delete_from_temp_hosting(video_url: str, hosting_url: str) -> None:
-    if not video_url or not hosting_url:
+def delete_from_temp_hosting(video_url: str, hosting_url: Optional[str]) -> None:
+    if not video_url or not hosting_url or not video_url.startswith(hosting_url.rstrip("/")):
         return
     try:
         filename = video_url.split("/")[-1]

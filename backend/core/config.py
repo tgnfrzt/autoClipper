@@ -249,7 +249,6 @@ def is_instagram_configured() -> bool:
     return bool(
         settings.INSTAGRAM_BUSINESS_ID
         and settings.PAGE_ACCESS_TOKEN
-        and settings.REMOTE_HOSTING_URL
     )
 
 

@@ -334,21 +334,21 @@ class VisionModelManager:
     # ------------------------------------------------------------------
     def _crop_corner(self, img: np.ndarray, corner: str) -> np.ndarray:
         h, w = img.shape[:2]
-        cw = max(64, int(w * 0.28))
-        ch = max(48, int(h * 0.34))
-        if corner == "top_left":
-            return img[0:ch, 0:cw]
-        if corner == "top_right":
-            return img[0:ch, w - cw:w]
-        if corner == "bottom_left":
-            return img[h - ch:h, 0:cw]
-        return img[h - ch:h, w - cw:w]
+        cw = max(64, int(w * 0.24))
+        ch = max(48, int(h * 0.30))
+        x0, x1 = (w - cw, w) if "right" in corner else (0, cw)
+        if corner.startswith("mid_"):
+            y0 = max(0, (h - ch) // 2)
+            return img[y0 : y0 + ch, x0:x1]
+        if corner.startswith("bottom_"):
+            return img[h - ch : h, x0:x1]
+        return img[0:ch, x0:x1]
 
     def inspect_facecam_and_motion(self, stream_id: str, image_path: str) -> Dict[str, Any]:
         """
-        Detects corner facecam presence (with sticky hysteresis across frames),
-        computes overall gameplay motion/flash score, and computes a separate
-        facecam_reaction_score from sudden movement inside the streamer's webcam box.
+        Detects stationary edge/corner facecam overlays (including mid-left / mid-right webcams)
+        with skin-tone verification & 3-hit hysteresis, computes gameplay motion/flash score,
+        and scores sudden movement inside the streamer's facecam box.
         """
         img = cv2.imread(image_path)
         if img is None:
@@ -383,35 +383,66 @@ class VisionModelManager:
         red_score = min(100.0, float(np.mean(red_excess)) * 2.5)
         cv_score = round(min(100.0, 0.55 * motion_score + 0.30 * flash_score + 0.15 * red_score), 1)
 
-        # 2. Corner Facecam Detection with Hysteresis
-        cache = self._facecam_cache.setdefault(stream_id, {"has_facecam": False, "corner": "", "hits": 0})
+        # 2. Edge/Corner Facecam Detection with Skin Check & Hysteresis (supports top/mid/bottom left/right)
+        cache = self._facecam_cache.setdefault(
+            stream_id, {"has_facecam": False, "corner": "", "hits": 0, "last_pos": None}
+        )
         gray_full = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        ycrcb_full = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
         if self._face_cascade is not None and not self._face_cascade.empty():
-            faces = self._face_cascade.detectMultiScale(gray_full, scaleFactor=1.15, minNeighbors=4, minSize=(26, 26))
+            faces = self._face_cascade.detectMultiScale(gray_full, scaleFactor=1.1, minNeighbors=5, minSize=(32, 32))
             detected_corner = ""
+            det_pos: Optional[Tuple[float, float]] = None
             for (fx, fy, fw, fh) in faces:
                 cx = (fx + fw * 0.5) / w
                 cy = (fy + fh * 0.5) / h
-                if cx <= 0.34 and cy <= 0.44:
-                    detected_corner = "top_left"
-                    break
-                if cx >= 0.66 and cy <= 0.44:
-                    detected_corner = "top_right"
-                    break
-                if cx <= 0.34 and cy >= 0.56:
-                    detected_corner = "bottom_left"
-                    break
-                if cx >= 0.66 and cy >= 0.56:
-                    detected_corner = "bottom_right"
-                    break
-            if detected_corner:
+                if not (cx <= 0.26 or cx >= 0.74):
+                    continue
+                if fw / w > 0.22 or fh / h > 0.32:
+                    continue
+                roi = ycrcb_full[int(fy + fh * 0.15) : int(fy + fh * 0.85), int(fx + fw * 0.15) : int(fx + fw * 0.85)]
+                skin_ratio = (
+                    float(
+                        np.mean(
+                            (roi[:, :, 0] >= 35)
+                            & (roi[:, :, 1] >= 130)
+                            & (roi[:, :, 1] <= 180)
+                            & (roi[:, :, 2] >= 75)
+                            & (roi[:, :, 2] <= 130)
+                        )
+                    )
+                    if roi.size
+                    else 0.0
+                )
+                if skin_ratio < 0.20:
+                    continue
+                horiz = "left" if cx < 0.5 else "right"
+                vert = "top" if cy < 0.36 else ("mid" if cy <= 0.64 else "bottom")
+                detected_corner = f"{vert}_{horiz}"
+                det_pos = (cx, cy)
+                break
+
+            if detected_corner and det_pos is not None:
+                prev_pos = cache.get("last_pos")
+                same_spot = (
+                    prev_pos is None
+                    or (abs(det_pos[0] - prev_pos[0]) < 0.04 and abs(det_pos[1] - prev_pos[1]) < 0.04)
+                )
+                if same_spot or cache["corner"] == detected_corner:
+                    cache["hits"] = min(10, cache["hits"] + 2)
+                else:
+                    cache["hits"] = 1
                 cache["corner"] = detected_corner
-                cache["hits"] = min(10, cache["hits"] + 2)
-                cache["has_facecam"] = True
+                cache["last_pos"] = det_pos
+                # Require at least 2 confirming frames before locking a facecam badge
+                if cache["hits"] >= 3:
+                    cache["has_facecam"] = True
             else:
                 cache["hits"] = max(0, cache["hits"] - 1)
-                if cache["hits"] == 0 and not cache["corner"]:
+                if cache["hits"] == 0:
                     cache["has_facecam"] = False
+                    cache["corner"] = ""
+                    cache["last_pos"] = None
 
         # 3. Compute Facecam Reaction Score (sudden webcam motion when streamer reacts/jumps/yells)
         facecam_score = 0.0
@@ -461,15 +492,22 @@ class VisionModelManager:
     # ------------------------------------------------------------------
     @staticmethod
     def _is_twitch_ad_slate(img: np.ndarray) -> bool:
-        """Detects Twitch's purple 'Commercial break in progress' slate in <2ms via HSV color ratio."""
+        """
+        Detects Twitch's purple 'Commercial break in progress' slate in <3ms.
+        Requires bright Twitch brand purple (H 133..148, S>=135, V>=110) covering >=42%
+        of the frame AND low edge complexity so dark blue GTA night skies never false-trigger.
+        """
         if img is None:
             return False
         small = cv2.resize(img, (160, 90))
         hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
-        # OpenCV Hue range [0..179]; Twitch purple sits cleanly in [125..165]
-        mask = (hsv[:, :, 0] >= 125) & (hsv[:, :, 0] <= 165) & (hsv[:, :, 1] >= 70) & (hsv[:, :, 2] >= 50)
+        mask = (hsv[:, :, 0] >= 133) & (hsv[:, :, 0] <= 148) & (hsv[:, :, 1] >= 135) & (hsv[:, :, 2] >= 110)
         purple_ratio = float(np.mean(mask))
-        return purple_ratio >= 0.32
+        if purple_ratio < 0.42:
+            return False
+        edges = cv2.Canny(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), 60, 140)
+        edge_mean = float(np.mean(edges))
+        return edge_mean < 22.0
 
     @staticmethod
     def _contains_blocked_phrase(*texts: str) -> bool:
@@ -575,10 +613,10 @@ class VisionModelManager:
         prompt = (
             f"Analyze this live GTA / gaming stream frame from {streamer_name or 'streamer'}. {cam_hint}\n"
             f"Chat hype right now: {chat_context or 'normal'}.\n"
-            "First check if this frame is a Twitch/YouTube commercial break, ad, sponsor banner, starting-soon/BRB screen, or offline notice -> set is_ad_or_break=true and visual_score=0.\n"
-            "Otherwise score 0-100 for how clip-worthy/exciting the gameplay & streamer reaction are "
-            "(0=menu/AFK, 40=normal gameplay, 75=police chase/crash/shocked facecam/gunfight, 95=explosion/WASTED/insane stunt/screaming reaction).\n"
-            'Respond ONLY with compact JSON: {"visual_score": <0-100>, "is_ad_or_break": <true/false>, "event": "<2-4 words>", "summary": "<short 1 sentence>"}'
+            "Score 0-100 for how clip-worthy/exciting the gameplay & streamer reaction are "
+            "(0=menu/AFK/commercial break, 40=normal gameplay, 75=police chase/crash/shocked facecam/gunfight, 95=explosion/WASTED/insane stunt/screaming reaction).\n"
+            "ONLY set is_commercial_break=true if the full screen is literally a Twitch/YouTube 'Commercial break in progress' slate or 'Stream offline / starting soon' slate with no game visible.\n"
+            'Respond ONLY with compact JSON: {"visual_score": <0-100>, "is_commercial_break": <true/false>, "event": "<2-4 words>", "summary": "<short 1 sentence>"}'
         )
 
         t0 = time.time()
@@ -606,7 +644,9 @@ class VisionModelManager:
 
         ev_text = str(vlm_res.get("event", "gameplay"))[:60]
         sum_text = str(vlm_res.get("summary", ""))[:220]
-        is_ad = bool(vlm_res.get("is_ad_or_break")) or self._contains_blocked_phrase(ev_text, sum_text)
+        vlm_score = float(max(0.0, min(100.0, vlm_res.get("visual_score", base_fallback_score))))
+        flagged_ad = bool(vlm_res.get("is_commercial_break") or vlm_res.get("is_ad_or_break"))
+        is_ad = self._contains_blocked_phrase(ev_text, sum_text) or (flagged_ad and vlm_score < 25.0)
         if is_ad:
             return {
                 "visual_score": 0.0,
@@ -705,20 +745,37 @@ class VisionModelManager:
             cap.release()
         return b64_frames, ad_detected
 
-    def _clean_and_validate_caption(self, raw_overlay: str, summary: str, streamer_name: str) -> str:
+    def _clean_and_validate_caption(
+        self,
+        raw_overlay: str,
+        summary: str,
+        streamer_name: str,
+        fallback_kw: str = "",
+    ) -> str:
         # Strip hashtags and quotes
         cap = re.sub(r"#\w+", "", raw_overlay or "").strip().strip('"').strip("'").strip()
         s_clean = streamer_name.strip()
+        # Strip accidental other-streamer hallucinated prefix like "LIRIK xQc ..." if model echoed an unrelated handle
+        other_handles = ("xqc", "rubius", "kaicenat", "lirik", "squeezie", "jynxzi", "trymacs", "zarbex")
+        for h in other_handles:
+            if h != s_clean.lower():
+                cap = re.sub(rf"^{re.escape(s_clean)}[:\s]+{h}\b\s*", f"{s_clean} ", cap, flags=re.IGNORECASE)
+                cap = re.sub(rf"^{h}[:\s]+", "", cap, flags=re.IGNORECASE)
+
         if not cap or cap.lower() == s_clean.lower() or len(cap) <= len(s_clean) + 3 or cap.lower().startswith("streamer:"):
-            cap = f"{s_clean}: {summary[:65]}" if summary else f"{s_clean} pulls off an insane moment!"
+            cap = f"{s_clean}: {summary[:65]}" if summary else f"{s_clean} pulls off a crazy moment!"
         elif any(v in cap.lower() for v in VAGUE_FILLER_PHRASES):
-            # Replace vague generic filler with concrete summary if summary is specific
             if summary and not any(v in summary.lower() for v in VAGUE_FILLER_PHRASES):
                 cap = f"{s_clean}: {summary[:65]}"
+            elif fallback_kw and fallback_kw != "chat going crazy":
+                cap = f"{s_clean} goes wild ({fallback_kw[:45]})"
+            else:
+                cap = f"{s_clean} triggers an insane gameplay moment!"
+
         if s_clean.lower() not in cap.lower():
             cap = f"{s_clean} {cap}"
-        # Collapse accidental duplicate prefix like "xQc: xQc ..."
-        cap = re.sub(rf"^{re.escape(s_clean)}\s*:\s*{re.escape(s_clean)}\b", s_clean, cap, flags=re.IGNORECASE)
+        # Collapse accidental duplicate prefix like "xQc: xQc ..." or "LIRIK: LIRIK ..."
+        cap = re.sub(rf"^{re.escape(s_clean)}\s*:?\s+{re.escape(s_clean)}\b", s_clean, cap, flags=re.IGNORECASE)
         cap = " ".join(cap.split())
         if len(cap) > 95:
             cap = cap[:95].rsplit(" ", 1)[0]
@@ -770,18 +827,18 @@ class VisionModelManager:
         chat_lines = " | ".join(chat_sample[-5:]) if chat_sample else fallback_kw
         speech_line = f'Streamer actually said: "{transcript}"\n' if len(transcript.strip()) >= 5 else ""
         prompt = (
-            f"You are a strict Twitch/YouTube gaming clip editor.\n"
+            f"You are a Twitch/YouTube gaming clip editor analyzing a GTA clip from {streamer_name}.\n"
             f"Streamer: {streamer_name}\n"
             f"{speech_line}"
             f"Chat burst ({chat_mps:.1f} msg/s): {chat_lines}\n"
-            "STEP 1 — FILTER: If ANY frame shows a commercial break, Twitch ad screen, sponsor banner, starting-soon/BRB screen, or static menu with no gameplay action, set \"is_ad_or_break\": true.\n"
-            "STEP 2 — CAPTION: Otherwise set \"is_ad_or_break\": false and write a strict, specific 6-11 word on-screen caption starting with the streamer's name that describes the exact visual action or reaction seen in the frames "
-            "(for example: 'xQc launches a car off the highway ramp' or 'Rubius gasps after losing the boss fight'). "
-            "NEVER write generic filler like 'yelling in the game', 'reacting to chat', 'commercial break', or hashtags in overlay_caption.\n"
+            f"Write a specific 6-11 word on-screen caption starting with '{streamer_name}' that describes the exact visual action or reaction seen in the frames "
+            f"(for example: '{streamer_name} launches a car off the highway ramp' or '{streamer_name} gasps after crashing into a police blockade'). "
+            "NEVER invent other streamer names, NEVER write generic filler like 'yelling in the game' or 'reacting to chat', and NEVER put hashtags in overlay_caption.\n"
+            "ONLY set is_commercial_break=true if ALL frames are literally a Twitch 'Commercial break in progress' slate or offline screen with zero game visible.\n"
             "Respond ONLY with valid JSON:\n"
-            '{"is_ad_or_break": <true/false>, '
-            '"overlay_caption": "<6-11 words starting with streamer name describing concrete visual action>", '
-            '"title": "<catchy Shorts title with streamer name>", '
+            '{"is_commercial_break": <true/false>, '
+            f'"overlay_caption": "<6-11 words starting with {streamer_name} describing concrete visual action>", '
+            f'"title": "<catchy Shorts title with {streamer_name}>", '
             '"summary": "<1-2 sentence breakdown of exact gameplay and streamer reaction>", '
             '"caption": "<social post caption with #GTA6 #GTAVI #Gaming hashtags>"}'
         )
@@ -797,11 +854,14 @@ class VisionModelManager:
         raw_title = str(res.get("title") or "").strip()
         raw_summary = str(res.get("summary") or "").strip()
 
-        if bool(res.get("is_ad_or_break")) or self._contains_blocked_phrase(raw_overlay, raw_title, raw_summary):
+        flagged_ad = bool(res.get("is_commercial_break") or res.get("is_ad_or_break"))
+        if self._contains_blocked_phrase(raw_overlay, raw_title, raw_summary) or (
+            flagged_ad and not any(k in raw_summary.lower() for k in ("car", "driv", "shoot", "walk", "run", "fly", "game", "character", "police", "gta"))
+        ):
             return {"reject_reason": f"Non-gameplay / ad break detected ({raw_summary[:80]})"}
 
         summary = raw_summary or fallback["summary"]
-        overlay = self._clean_and_validate_caption(raw_overlay, summary, streamer_name)
+        overlay = self._clean_and_validate_caption(raw_overlay, summary, streamer_name, fallback_kw=fallback_kw)
         title = raw_title or overlay
         if streamer_name.lower() not in title.lower():
             title = f"{streamer_name} — {title}"

@@ -110,9 +110,14 @@ async def render_clip(clip_id: str, req: ClipRenderRequest) -> Dict[str, Any]:
         cap_txt,
         clip.get("streamer_name") or "",
     )
+    fc_used = str(res.get("facecam_used") or "")
+    actual_fc = "" if fc_used in ("", "none") else fc_used
     conn = get_db()
     with conn:
-        conn.execute("UPDATE clips SET rendered_path = ?, overlay_caption = ? WHERE id = ?", (res["output_path"], cap_txt, clip_id))
+        conn.execute(
+            "UPDATE clips SET rendered_path = ?, overlay_caption = ?, facecam_corner = ? WHERE id = ?",
+            (res["output_path"], cap_txt, actual_fc, clip_id),
+        )
     conn.close()
     return {"success": True, **res}
 

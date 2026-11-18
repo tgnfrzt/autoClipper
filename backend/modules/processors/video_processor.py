@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from backend.core.config import CLIPS_RENDERED_DIR, get_watermark_path, settings
@@ -116,80 +117,196 @@ def _create_caption_overlay_png(
     return png_path
 
 
-def _detect_facecam_corner(video_path: str, width: int, height: int) -> Optional[str]:
+def _classify_cam_zone(cx_norm: float, cy_norm: float) -> str:
+    horiz = "left" if cx_norm < 0.5 else "right"
+    if cy_norm < 0.36:
+        vert = "top"
+    elif cy_norm <= 0.64:
+        vert = "mid"
+    else:
+        vert = "bottom"
+    return f"{vert}_{horiz}"
+
+
+def _detect_facecam_box(
+    video_path: str,
+    width: int,
+    height: int,
+) -> Tuple[Optional[str], Optional[Tuple[int, int, int, int]]]:
+    """
+    Accurately detects a stationary streamer webcam overlay across multiple frames using:
+    1. Multi-frame frontal face clustering along edge zones (including mid-left/mid-right webcams)
+    2. Tight spatial stability (eliminates moving gameplay NPCs / car wheels / HUD circles)
+    3. Human skin-tone presence check in YCrCb space
+    4. Temporal mean-frame rectangular border snapping so the crop hugs the webcam cleanly.
+
+    Returns (corner_label, (cw, ch, cx, cy)) or (None, None) if no real facecam is found.
+    """
     if width <= 0 or height <= 0:
-        return None
+        return None, None
     try:
         cascade_cls = getattr(cv2, "CascadeClassifier", None)
         if cascade_cls is None or not hasattr(cv2, "data"):
-            return None
+            return None, None
         cascade_path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
         if not os.path.isfile(cascade_path):
-            return None
+            return None, None
         face_cascade = cascade_cls(cascade_path)
         if face_cascade.empty():
-            return None
+            return None, None
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            return None
+            return None, None
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         sample_indices = (
-            [max(0, int(total_frames * r)) for r in (0.2, 0.5, 0.8)]
-            if total_frames > 10
-            else [0, 15, 30]
+            [max(0, int(total_frames * r)) for r in (0.15, 0.32, 0.50, 0.68, 0.85)]
+            if total_frames > 15
+            else [0, 8, 16, 24, 32]
         )
 
-        corner_votes: Dict[str, int] = {
-            "top_left": 0,
-            "top_right": 0,
-            "bottom_left": 0,
-            "bottom_right": 0,
-        }
+        sampled_frames: List[np.ndarray] = []
+        candidates: List[Tuple[int, float, float, float, float, float]] = []
 
         for idx in sample_indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ok, frame = cap.read()
             if not ok or frame is None:
                 continue
+            fidx = len(sampled_frames)
+            sampled_frames.append(frame)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=4, minSize=(30, 30))
+            ycrcb = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(34, 34))
             for (fx, fy, fw, fh) in faces:
-                cx = (fx + fw * 0.5) / width
-                cy = (fy + fh * 0.5) / height
-                is_left = cx <= 0.34
-                is_right = cx >= 0.66
-                is_top = cy <= 0.44
-                is_bottom = cy >= 0.56
-                if is_left and is_top:
-                    corner_votes["top_left"] += 1
-                elif is_right and is_top:
-                    corner_votes["top_right"] += 1
-                elif is_left and is_bottom:
-                    corner_votes["bottom_left"] += 1
-                elif is_right and is_bottom:
-                    corner_votes["bottom_right"] += 1
+                cx_norm = (fx + fw * 0.5) / width
+                cy_norm = (fy + fh * 0.5) / height
+                w_norm = fw / width
+                h_norm = fh / height
+                # Streamer webcams live on the left/right edges (or corners), not dead-center gameplay
+                if not (cx_norm <= 0.26 or cx_norm >= 0.74):
+                    continue
+                if w_norm > 0.22 or h_norm > 0.32:
+                    continue
+                ix0, iy0 = int(fx + fw * 0.15), int(fy + fh * 0.15)
+                ix1, iy1 = int(fx + fw * 0.85), int(fy + fh * 0.85)
+                roi = ycrcb[iy0:iy1, ix0:ix1]
+                skin_ratio = (
+                    float(
+                        np.mean(
+                            (roi[:, :, 0] >= 35)
+                            & (roi[:, :, 1] >= 130)
+                            & (roi[:, :, 1] <= 180)
+                            & (roi[:, :, 2] >= 75)
+                            & (roi[:, :, 2] <= 130)
+                        )
+                    )
+                    if roi.size
+                    else 0.0
+                )
+                candidates.append((fidx, cx_norm, cy_norm, w_norm, h_norm, skin_ratio))
 
         cap.release()
-        best_corner, votes = max(corner_votes.items(), key=lambda kv: kv[1])
-        return best_corner if votes >= 1 else None
+        if len(sampled_frames) < 3 or not candidates:
+            return None, None
+
+        # Find the densest spatially consistent cluster across unique frames
+        best_cluster: List[Tuple[int, float, float, float, float, float]] = []
+        for c in candidates:
+            nearby = [x for x in candidates if abs(x[1] - c[1]) < 0.05 and abs(x[2] - c[2]) < 0.05]
+            by_frame: Dict[int, Tuple[int, float, float, float, float, float]] = {}
+            for x in nearby:
+                if x[0] not in by_frame or x[5] > by_frame[x[0]][5]:
+                    by_frame[x[0]] = x
+            if len(by_frame) > len(best_cluster):
+                best_cluster = list(by_frame.values())
+
+        if len(best_cluster) < 3:
+            return None, None
+
+        mcx = float(np.median([x[1] for x in best_cluster]))
+        mcy = float(np.median([x[2] for x in best_cluster]))
+        mfh = float(np.median([x[4] for x in best_cluster]))
+        stdx = float(np.std([x[1] for x in best_cluster]))
+        stdy = float(np.std([x[2] for x in best_cluster]))
+        max_skin = max(x[5] for x in best_cluster)
+
+        # Webcam overlay does not walk across screen between keyframes
+        if stdx > 0.022 or stdy > 0.022 or max_skin < 0.20:
+            return None, None
+
+        # Snap to stationary picture-in-picture webcam edges using temporal mean frame
+        mean_gray = np.mean([cv2.cvtColor(f, cv2.COLOR_BGR2GRAY).astype(np.float32) for f in sampled_frames], axis=0)
+        is_left = mcx < 0.5
+        sx0, sx1 = (0, int(width * 0.24)) if is_left else (int(width * 0.76), width)
+        row_diff = np.mean(np.abs(np.diff(mean_gray[:, sx0:sx1], axis=0)), axis=1)
+        yb0, yb1 = max(0, int((mcy - 0.16) * height)), min(height, int((mcy + 0.16) * height))
+        col_diff = np.mean(np.abs(np.diff(mean_gray[yb0:yb1, :], axis=1)), axis=0)
+
+        t0 = max(2, int((mcy - 0.24) * height))
+        t1 = max(t0 + 2, int((mcy - max(0.03, mfh * 0.45)) * height))
+        b0 = min(height - 4, int((mcy + max(0.03, mfh * 0.45)) * height))
+        b1 = max(b0 + 2, min(height - 2, int((mcy + 0.26) * height)))
+
+        top_seg = row_diff[t0:t1]
+        bot_seg = row_diff[b0:b1]
+        top_peak = float(np.max(top_seg)) if top_seg.size else 0.0
+        bot_peak = float(np.max(bot_seg)) if bot_seg.size else 0.0
+        top_y = (t0 + int(np.argmax(top_seg))) if top_peak >= 12.0 else max(0, int((mcy - 0.13) * height))
+        bot_y = (b0 + int(np.argmax(bot_seg))) if bot_peak >= 12.0 else min(height, int((mcy + 0.13) * height))
+
+        if is_left:
+            r0, r1 = int(width * 0.14), int(width * 0.30)
+            side_seg = col_diff[r0:r1]
+            side_peak = float(np.max(side_seg)) if side_seg.size else 0.0
+            right_x = (r0 + int(np.argmax(side_seg))) if side_peak >= 12.0 else int(width * 0.22)
+            left_x = 0
+            l1 = max(2, int(mcx * width - width * 0.03))
+            if l1 > 6 and float(np.max(col_diff[0:l1])) >= 18.0:
+                left_x = int(np.argmax(col_diff[0:l1]))
+        else:
+            l0, l1 = int(width * 0.70), int(width * 0.86)
+            side_seg = col_diff[l0:l1]
+            side_peak = float(np.max(side_seg)) if side_seg.size else 0.0
+            left_x = (l0 + int(np.argmax(side_seg))) if side_peak >= 12.0 else int(width * 0.78)
+            right_x = width
+
+        # Require at least one genuine static PIP border unless position stability is ultra-tight
+        if max(top_peak, bot_peak, side_peak) < 12.0 and (stdx > 0.012 or stdy > 0.012):
+            return None, None
+
+        cw = max(120, right_x - left_x)
+        # Prevent weaker chat-box horizontal lines below the webcam from stretching height too far
+        if bot_peak < 25.0 and (bot_y - top_y) > int(cw * 0.68):
+            bot_y = min(height, top_y + int(cw * 0.66))
+
+        ch = max(90, bot_y - top_y)
+        # Ensure even integer bounds inside frame for ffmpeg crop
+        cx = max(0, min(width - cw, left_x) // 2 * 2)
+        cy = max(0, min(height - ch, top_y) // 2 * 2)
+        cw = min(width - cx, cw // 2 * 2)
+        ch = min(height - cy, ch // 2 * 2)
+        if cw < 100 or ch < 80:
+            return None, None
+
+        return _classify_cam_zone(mcx, mcy), (cw, ch, cx, cy)
     except Exception:
-        return None
+        return None, None
 
 
 def _corner_crop_expr(corner: str, width: int, height: int) -> Tuple[int, int, int, int]:
-    cw = max(160, int(width * 0.28) // 2 * 2)
-    ch = max(120, int(height * 0.32) // 2 * 2)
-    if corner == "top_left":
-        return cw, ch, 0, 0
-    if corner == "top_right":
-        return cw, ch, max(0, (width - cw) // 2 * 2), 0
-    if corner == "bottom_left":
-        return cw, ch, 0, max(0, (height - ch) // 2 * 2)
-    if corner == "bottom_right":
-        return cw, ch, max(0, (width - cw) // 2 * 2), max(0, (height - ch) // 2 * 2)
-    return cw, ch, 0, 0
+    cw = max(160, int(width * 0.24) // 2 * 2)
+    ch = max(120, int(height * 0.30) // 2 * 2)
+    is_right = "right" in corner
+    cx = max(0, (width - cw) // 2 * 2) if is_right else 0
+    if corner.startswith("mid_"):
+        cy = max(0, ((height - ch) // 2) // 2 * 2)
+    elif corner.startswith("bottom_"):
+        cy = max(0, (height - ch) // 2 * 2)
+    else:
+        cy = 0
+    return cw, ch, cx, cy
 
 
 def render_clip_for_social(
@@ -203,7 +320,8 @@ def render_clip_for_social(
 ) -> Dict[str, Any]:
     """
     Formats a raw clip into Smart 9:16 Gaming Split (or blurred 9:16 / original 16:9)
-    and optionally burns in a crisp on-screen caption banner naming the streamer.
+    with a zoomed-out 16:9 gameplay crop, subtle blurred mirror top/bottom margins,
+    accurate multi-frame facecam cropping, and a burned-in streamer caption banner.
     """
     if not os.path.isfile(raw_path):
         raise FileNotFoundError(f"Raw clip not found: {raw_path}")
@@ -233,55 +351,65 @@ def render_clip_for_social(
         }
 
     detected_corner: Optional[str] = None
+    cam_box: Optional[Tuple[int, int, int, int]] = None
     if mode == "smart_gaming_split":
-        if cam_pref in ("top_left", "top_right", "bottom_left", "bottom_right"):
+        if cam_pref in ("top_left", "top_right", "mid_left", "mid_right", "bottom_left", "bottom_right"):
             detected_corner = cam_pref
+            cam_box = _corner_crop_expr(cam_pref, src_w, src_h)
         elif cam_pref == "auto":
-            detected_corner = _detect_facecam_corner(raw_path, src_w, src_h)
+            detected_corner, cam_box = _detect_facecam_box(raw_path, src_w, src_h)
 
     target_w, target_h = (src_w, src_h) if mode == "original_16_9" else (1080, 1920)
     wm_path = get_watermark_path()
 
-    caption_y = 620
+    caption_y = 560
     if mode == "original_16_9":
         filter_complex = f"[0:v]setsar=1[base]"
         caption_y = max(90, int(target_h * 0.14))
-    elif mode == "smart_gaming_split" and detected_corner:
-        cw, ch, cx, cy = _corner_crop_expr(detected_corner, src_w, src_h)
-        gw = max(320, int(src_w * 0.62) // 2 * 2)
+    elif mode == "smart_gaming_split" and detected_corner and cam_box:
+        cw, ch, cx, cy = cam_box
+        # Keep 76% of the 16:9 horizontal width (zoomed out vs 46.7% before) and fill margins with blurred mirror
+        gw = max(320, int(src_w * 0.76) // 2 * 2)
         gx = max(0, ((src_w - gw) // 2) // 2 * 2)
+        fg_h = max(360, min(1160, (int(round(1080 * src_h / gw)) // 2) * 2))
 
-        af_filter = (
+        af_fg = (
             ",eq=contrast=1.02:brightness=0.005:saturation=1.03,noise=alls=1:allf=t+u"
             if use_af
             else ""
         )
         filter_complex = (
-            f"[0:v]split=2[vcam_in][vgame_in];"
+            f"[0:v]split=3[vcam_in][vgame_bg][vgame_fg];"
             f"[vcam_in]crop={cw}:{ch}:{cx}:{cy},"
-            f"scale=1080:620:force_original_aspect_ratio=increase,crop=1080:620,setsar=1[cam];"
-            f"[vgame_in]crop={gw}:{src_h}:{gx}:0,"
-            f"scale=1080:1300:force_original_aspect_ratio=increase,crop=1080:1300,setsar=1[game];"
+            f"scale=1080:560:force_original_aspect_ratio=increase,crop=1080:560,setsar=1[cam];"
+            f"[vgame_bg]scale=270:340:force_original_aspect_ratio=increase,"
+            f"crop=270:340,boxblur=14:3,eq=brightness=-0.06:saturation=1.15,scale=1080:1360,setsar=1[gbg];"
+            f"[vgame_fg]crop={gw}:{src_h}:{gx}:0,"
+            f"scale=1080:{fg_h},setsar=1{af_fg}[gfg];"
+            f"[gbg][gfg]overlay=(W-w)/2:(H-h)/2[game];"
             f"[cam][game]vstack=inputs=2,"
-            f"drawbox=x=0:y=618:w=1080:h=4:color=#6366f1@0.95:t=fill{af_filter}[base]"
+            f"drawbox=x=0:y=558:w=1080:h=4:color=#6366f1@0.95:t=fill[base]"
         )
-        caption_y = 620
+        caption_y = 560
     elif mode == "smart_gaming_split":
-        gw = max(320, int(src_w * 0.72) // 2 * 2)
+        # Pure 16:9 gameplay without facecam: show 76% horizontal view + clean blurred mirror margins
+        gw = max(320, int(src_w * 0.76) // 2 * 2)
         gx = max(0, ((src_w - gw) // 2) // 2 * 2)
+        fg_h = max(360, min(1320, (int(round(1080 * src_h / gw)) // 2) * 2))
         af_fg = (
             ",eq=contrast=1.02:brightness=0.006:saturation=1.04,noise=alls=1:allf=t+u"
             if use_af
             else ""
         )
         filter_complex = (
-            f"[0:v]scale=270:480:force_original_aspect_ratio=increase,"
-            f"crop=270:480,boxblur=6:2,scale={target_w}:{target_h},setsar=1[bg];"
-            f"[0:v]crop={gw}:{src_h}:{gx}:0,"
-            f"scale=1080:1350:force_original_aspect_ratio=decrease,setsar=1{af_fg}[fg];"
+            f"[0:v]split=2[vbg][vfg];"
+            f"[vbg]scale=270:480:force_original_aspect_ratio=increase,"
+            f"crop=270:480,boxblur=14:3,eq=brightness=-0.06:saturation=1.15,scale={target_w}:{target_h},setsar=1[bg];"
+            f"[vfg]crop={gw}:{src_h}:{gx}:0,"
+            f"scale=1080:{fg_h},setsar=1{af_fg}[fg];"
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base]"
         )
-        caption_y = 250
+        caption_y = max(240, (target_h - fg_h) // 2 - 90)
     else:
         af_fg = (
             ",scale=iw*1.02:ih*1.02,crop=iw/1.02:ih/1.02,"

@@ -740,12 +740,14 @@
               <div class="field">
                 <label for="cfg_FACECAM_POSITION">Facecam Location</label>
                 <select id="cfg_FACECAM_POSITION" name="FACECAM_POSITION">
-                  <option value="auto">Auto-Detect Corner Facecam (OpenCV)</option>
+                  <option value="auto">Auto-Detect Streamer Facecam (Skin + Border Lock)</option>
                   <option value="top_left">Top-Left Corner</option>
-                  <option value="top_right">Top-Right Corner</option>
+                  <option value="mid_left">Mid-Left Edge</option>
                   <option value="bottom_left">Bottom-Left Corner</option>
+                  <option value="top_right">Top-Right Corner</option>
+                  <option value="mid_right">Mid-Right Edge</option>
                   <option value="bottom_right">Bottom-Right Corner</option>
-                  <option value="none">No Facecam (Zoomed Gameplay)</option>
+                  <option value="none">No Facecam (Zoomed 16:9 + Blurred Margins)</option>
                 </select>
               </div>
               <div class="field" style="justify-content:flex-end;">
@@ -865,8 +867,8 @@
                 </div>
               </div>
               <div class="field">
-                <label for="cfg_REMOTE_HOSTING_URL">Temporary Public Relay URL (for Reels)</label>
-                <input id="cfg_REMOTE_HOSTING_URL" name="REMOTE_HOSTING_URL" type="url" autocorrect="off" autocapitalize="none" spellcheck="false" />
+                <label for="cfg_REMOTE_HOSTING_URL">Custom Relay URL (Optional — Built-in Fallback Active)</label>
+                <input id="cfg_REMOTE_HOSTING_URL" name="REMOTE_HOSTING_URL" type="url" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="https://your-relay.example.com (optional)" />
               </div>
               <div class="field" style="justify-content:flex-end;">
                 <div class="toolbar-group">

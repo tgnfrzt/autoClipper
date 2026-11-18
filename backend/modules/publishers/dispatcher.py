@@ -1,4 +1,5 @@
 import os
+import threading
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List
@@ -13,6 +14,9 @@ from backend.modules.processors.video_processor import render_clip_for_social
 from backend.modules.publishers.instagram import publish_instagram_graph_api
 from backend.modules.publishers.tiktok import publish_tiktok
 from backend.modules.publishers.youtube import publish_youtube_shorts
+
+_publish_lock = threading.Lock()
+_active_publishes: set[str] = set()
 
 
 def get_configured_platforms() -> List[str]:
@@ -63,6 +67,13 @@ def publish_clip_to_platforms(clip_id: str, platforms: List[str]) -> Dict[str, A
 
     for plat in platforms:
         p_norm = plat.lower().strip()
+        lock_key = f"{clip_id}:{p_norm}"
+        with _publish_lock:
+            if lock_key in _active_publishes:
+                results.append({"success": False, "platform": p_norm, "error": "Publish already in progress (deduplicated)."})
+                continue
+            _active_publishes.add(lock_key)
+
         try:
             if p_norm in ("youtube", "youtube_shorts", "yt"):
                 receipt = publish_youtube_shorts(
@@ -79,10 +90,18 @@ def publish_clip_to_platforms(clip_id: str, platforms: List[str]) -> Dict[str, A
                 receipt = {"success": False, "platform": p_norm, "error": f"Unknown platform: {plat}"}
         except Exception as exc:
             receipt = {"success": False, "platform": p_norm, "error": str(exc)}
+        finally:
+            with _publish_lock:
+                _active_publishes.discard(lock_key)
 
         ok = bool(receipt.get("success"))
         if ok:
             any_success = True
+
+        # Do not pollute history with redundant lock-skip notices
+        if receipt.get("error") == "Publish already in progress (deduplicated).":
+            results.append(receipt)
+            continue
 
         conn = get_db()
         with conn:
