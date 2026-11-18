@@ -33,6 +33,10 @@ class ClipPublishRequest(BaseModel):
     platforms: List[str] = ["all"]
 
 
+class ClipStatusRequest(BaseModel):
+    status: str = "accepted"
+
+
 @router.get("")
 def get_clips(limit: int = 100) -> Dict[str, Any]:
     items = list_clips(limit=limit)
@@ -111,6 +115,26 @@ async def render_clip(clip_id: str, req: ClipRenderRequest) -> Dict[str, Any]:
         conn.execute("UPDATE clips SET rendered_path = ?, overlay_caption = ? WHERE id = ?", (res["output_path"], cap_txt, clip_id))
     conn.close()
     return {"success": True, **res}
+
+
+@router.post("/{clip_id}/accept")
+async def accept_clip(clip_id: str, req: ClipStatusRequest = ClipStatusRequest()) -> Dict[str, Any]:
+    clip = get_clip(clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    new_status = req.status.strip().lower()
+    if new_status not in ("accepted", "pending", "posted", "rejected"):
+        raise HTTPException(status_code=400, detail="Invalid clip status")
+    conn = get_db()
+    with conn:
+        conn.execute("UPDATE clips SET status = ? WHERE id = ?", (new_status, clip_id))
+    conn.close()
+    if clip.get("discord_message_id") and new_status == "accepted":
+        await discord_bot.update_webhook_message_status(
+            clip["discord_message_id"],
+            f"✅ **Clip `{clip_id}` accepted and moved to Accepted Queue.**",
+        )
+    return {"success": True, "status": new_status}
 
 
 @router.post("/{clip_id}/publish")
@@ -196,6 +220,11 @@ async def discord_quick_action(clip_id: str, action: str = "all"):
         platforms = ["youtube_shorts" if act == "youtube" else act]
     else:
         return _action_html("Invalid Action", f"<p>Unknown action: {html.escape(action)}</p>", "#ef4444")
+
+    conn = get_db()
+    with conn:
+        conn.execute("UPDATE clips SET status = 'accepted' WHERE id = ?", (clip_id,))
+    conn.close()
 
     if clip.get("discord_message_id"):
         await discord_bot.update_webhook_message_status(

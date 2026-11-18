@@ -19,9 +19,9 @@ def _safe_folder_name(stream_id: str) -> str:
 
 def resolve_hls_url_sync(stream_url: str, quality: str = "720p,480p,best") -> Optional[str]:
     """Resolves a live Twitch or YouTube URL to a direct HLS manifest URL using streamlink or yt-dlp."""
-    # 1. Try streamlink first (best for Twitch & live HLS)
+    # 1. Try streamlink first (best for Twitch & live HLS, skip embedded Twitch ad breaks)
     try:
-        cmd = [settings.STREAMLINK_PATH, "--stream-url", stream_url, quality]
+        cmd = [settings.STREAMLINK_PATH, "--twitch-disable-ads", "--stream-url", stream_url, quality]
         res = subprocess.run(
             cmd,
             capture_output=True,

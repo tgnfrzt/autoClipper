@@ -35,6 +35,12 @@ def publish_clip_to_platforms(clip_id: str, platforms: List[str]) -> Dict[str, A
     if not clip:
         raise ValueError(f"Clip not found: {clip_id}")
 
+    # Move clip out of Pending Library immediately once accepted for publishing
+    conn = get_db()
+    with conn:
+        conn.execute("UPDATE clips SET status = 'accepted' WHERE id = ?", (clip_id,))
+    conn.close()
+
     video_to_post = clip.get("rendered_path") or ""
     if not video_to_post or not os.path.isfile(video_to_post):
         render_res = render_clip_for_social(

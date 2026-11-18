@@ -217,6 +217,7 @@ class StreamManagerService:
                     "top_keywords": [],
                     "visual_event": "buffering",
                     "visual_summary": "",
+                    "visual_blocked": False,
                     "last_vlm_ms": 0,
                     "eval_count": 0,
                     "thumb_url": "",
@@ -300,8 +301,12 @@ class StreamManagerService:
                             state["visual_score"] = vis["visual_score"]
                             state["visual_event"] = vis["event"]
                             state["visual_summary"] = vis["summary"]
+                            state["visual_blocked"] = bool(vis.get("is_blocked"))
                             state["last_vlm_ms"] = vis["latency_ms"]
                             state["eval_count"] += 1
+
+                            if vis.get("is_blocked"):
+                                self.log_event("FILTERED", f"Skipped {state['display_name']}: {vis['summary']}")
 
                             if vis["has_facecam"] and not prev_fc:
                                 update_streamer_facecam(sid, True, vis["facecam_corner"])
@@ -310,7 +315,10 @@ class StreamManagerService:
                                     f"Locked onto {state['display_name']}'s facecam ({vis['facecam_corner']}).",
                                 )
 
-                    combined = compute_combined_score(state["chat_score"], state["visual_score"])
+                    if state.get("visual_blocked") or state["visual_score"] < 24.0:
+                        combined = 0.0
+                    else:
+                        combined = compute_combined_score(state["chat_score"], state["visual_score"])
                     state["combined_score"] = combined
 
                     in_cooldown = (now - self._last_clip_at.get(sid, 0.0)) < settings.CLIP_COOLDOWN_SEC
@@ -413,6 +421,17 @@ class StreamManagerService:
                 chat_sample=chat_sample,
                 chat_mps=chat_mps,
             )
+
+            if meta.get("reject_reason"):
+                for p in (raw_mp4, clip_thumb):
+                    if p and os.path.isfile(p):
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            pass
+                self.log_event("FILTERED", f"Auto-filtered clip from {streamer_name}: {meta['reject_reason']}")
+                self._set_job_progress(job_id, streamer_name, 100, "Filtered (Commercial / Non-gameplay)")
+                return None
 
             self._set_job_progress(job_id, streamer_name, 72, "Rendering Smart 9:16 Gaming Split + Burned-In Caption...")
             rendered_path = ""

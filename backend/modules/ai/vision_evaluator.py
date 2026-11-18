@@ -20,6 +20,33 @@ from backend.core.config import MODELS_DIR, save_settings_to_env, settings
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
+BLOCKED_CLIP_PHRASES = (
+    "commercial break",
+    "ad break",
+    "advertisement",
+    "legal notice",
+    "starting soon",
+    "be right back",
+    "stream ending",
+    "stream offline",
+    "twitch break",
+    "stream break",
+    "gaming break",
+    "sponsor screen",
+    "4-8 word",
+    "exciting headline",
+    "inaudible yelling",
+    "inaudible / yelling",
+)
+
+VAGUE_FILLER_PHRASES = (
+    "yelling in the game",
+    "reacting to chat",
+    "reacts to chat",
+    "hosting a gaming session",
+    "yelling and interacting",
+)
+
 VLM_PRESETS: Dict[str, Dict[str, Any]] = {
     "qwen2.5-vl-3b": {
         "id": "qwen2.5-vl-3b",
@@ -430,8 +457,25 @@ class VisionModelManager:
         return base64.b64encode(buf.tobytes()).decode("ascii")
 
     # ------------------------------------------------------------------
-    # Real-Time Visual Evaluation (20% Signal)
+    # Commercial / Ad Slate Detection & Real-Time Visual Evaluation (20%)
     # ------------------------------------------------------------------
+    @staticmethod
+    def _is_twitch_ad_slate(img: np.ndarray) -> bool:
+        """Detects Twitch's purple 'Commercial break in progress' slate in <2ms via HSV color ratio."""
+        if img is None:
+            return False
+        small = cv2.resize(img, (160, 90))
+        hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+        # OpenCV Hue range [0..179]; Twitch purple sits cleanly in [125..165]
+        mask = (hsv[:, :, 0] >= 125) & (hsv[:, :, 0] <= 165) & (hsv[:, :, 1] >= 70) & (hsv[:, :, 2] >= 50)
+        purple_ratio = float(np.mean(mask))
+        return purple_ratio >= 0.32
+
+    @staticmethod
+    def _contains_blocked_phrase(*texts: str) -> bool:
+        joined = " ".join((t or "") for t in texts).lower()
+        return any(p in joined for p in BLOCKED_CLIP_PHRASES)
+
     async def evaluate_frame(
         self,
         stream_id: str,
@@ -448,6 +492,7 @@ class VisionModelManager:
                 "has_facecam": False,
                 "facecam_corner": "",
                 "facecam_score": 0.0,
+                "is_blocked": False,
                 "latency_ms": 0,
                 "event": "no_frame",
                 "summary": "",
@@ -455,6 +500,21 @@ class VisionModelManager:
 
         self.total_evaluations += 1
         cv_res = self.inspect_facecam_and_motion(stream_id, image_path)
+        img = cv_res["img"]
+
+        if self._is_twitch_ad_slate(img):
+            return {
+                "visual_score": 0.0,
+                "cv_score": 0.0,
+                "vlm_score": 0.0,
+                "has_facecam": cv_res["has_facecam"],
+                "facecam_corner": cv_res["facecam_corner"],
+                "facecam_score": 0.0,
+                "is_blocked": True,
+                "latency_ms": 0,
+                "event": "commercial_break",
+                "summary": "Twitch commercial break slate detected (auto-filtered)",
+            }
 
         base_fallback_score = (
             round(min(100.0, 0.65 * cv_res["cv_score"] + 0.35 * cv_res["facecam_score"]), 1)
@@ -470,6 +530,7 @@ class VisionModelManager:
                 "has_facecam": cv_res["has_facecam"],
                 "facecam_corner": cv_res["facecam_corner"],
                 "facecam_score": cv_res["facecam_score"],
+                "is_blocked": False,
                 "latency_ms": 0,
                 "event": "opencv_only" if settings.VLM_PROVIDER == "opencv_only" else "vlm_offline",
                 "summary": f"Motion {cv_res['motion']}% | Cam {cv_res['facecam_score']}%",
@@ -484,12 +545,12 @@ class VisionModelManager:
                 "has_facecam": cv_res["has_facecam"],
                 "facecam_corner": cv_res["facecam_corner"],
                 "facecam_score": cv_res["facecam_score"],
+                "is_blocked": False,
                 "latency_ms": 0,
                 "event": "opencv_fastpath",
                 "summary": f"Motion {cv_res['motion']}% | Cam {cv_res['facecam_score']}%",
             }
 
-        img = cv_res["img"]
         b64 = self._build_composite_b64(img, cv_res["facecam_corner"]) if img is not None else ""
         if not b64:
             return {
@@ -499,6 +560,7 @@ class VisionModelManager:
                 "has_facecam": cv_res["has_facecam"],
                 "facecam_corner": cv_res["facecam_corner"],
                 "facecam_score": cv_res["facecam_score"],
+                "is_blocked": False,
                 "latency_ms": 0,
                 "event": "encode_skip",
                 "summary": "",
@@ -513,9 +575,10 @@ class VisionModelManager:
         prompt = (
             f"Analyze this live GTA / gaming stream frame from {streamer_name or 'streamer'}. {cam_hint}\n"
             f"Chat hype right now: {chat_context or 'normal'}.\n"
-            "Score 0-100 for how clip-worthy/exciting the scene & streamer reaction are "
+            "First check if this frame is a Twitch/YouTube commercial break, ad, sponsor banner, starting-soon/BRB screen, or offline notice -> set is_ad_or_break=true and visual_score=0.\n"
+            "Otherwise score 0-100 for how clip-worthy/exciting the gameplay & streamer reaction are "
             "(0=menu/AFK, 40=normal gameplay, 75=police chase/crash/shocked facecam/gunfight, 95=explosion/WASTED/insane stunt/screaming reaction).\n"
-            'Respond ONLY with compact JSON: {"visual_score": <0-100>, "event": "<2-4 words>", "summary": "<short 1 sentence>"}'
+            'Respond ONLY with compact JSON: {"visual_score": <0-100>, "is_ad_or_break": <true/false>, "event": "<2-4 words>", "summary": "<short 1 sentence>"}'
         )
 
         t0 = time.time()
@@ -531,6 +594,7 @@ class VisionModelManager:
                 "has_facecam": cv_res["has_facecam"],
                 "facecam_corner": cv_res["facecam_corner"],
                 "facecam_score": cv_res["facecam_score"],
+                "is_blocked": False,
                 "latency_ms": latency_ms,
                 "event": "vlm_timeout",
                 "summary": f"OpenCV fallback (Motion {cv_res['motion']}%)",
@@ -539,6 +603,23 @@ class VisionModelManager:
         self.vlm_evaluations += 1
         self.last_latency_ms = latency_ms
         self._latencies_ms.append(latency_ms)
+
+        ev_text = str(vlm_res.get("event", "gameplay"))[:60]
+        sum_text = str(vlm_res.get("summary", ""))[:220]
+        is_ad = bool(vlm_res.get("is_ad_or_break")) or self._contains_blocked_phrase(ev_text, sum_text)
+        if is_ad:
+            return {
+                "visual_score": 0.0,
+                "cv_score": cv_res["cv_score"],
+                "vlm_score": 0.0,
+                "has_facecam": cv_res["has_facecam"],
+                "facecam_corner": cv_res["facecam_corner"],
+                "facecam_score": cv_res["facecam_score"],
+                "is_blocked": True,
+                "latency_ms": latency_ms,
+                "event": "commercial_break",
+                "summary": "Commercial break / non-gameplay screen filtered",
+            }
 
         vlm_score = float(max(0.0, min(100.0, vlm_res.get("visual_score", base_fallback_score))))
         if cv_res["has_facecam"]:
@@ -553,9 +634,10 @@ class VisionModelManager:
             "has_facecam": cv_res["has_facecam"],
             "facecam_corner": cv_res["facecam_corner"],
             "facecam_score": cv_res["facecam_score"],
+            "is_blocked": False,
             "latency_ms": latency_ms,
-            "event": str(vlm_res.get("event", "gameplay"))[:60],
-            "summary": str(vlm_res.get("summary", ""))[:220],
+            "event": ev_text,
+            "summary": sum_text,
         }
 
     # ------------------------------------------------------------------
@@ -597,25 +679,50 @@ class VisionModelManager:
             print(f"[Whisper] Transcription note: {exc}")
             return ""
 
-    def _extract_clip_keyframes(self, video_path: str, facecam_corner: str) -> List[str]:
-        """Extracts 3 keyframe composites (35%, 65%, 85% of clip) as base64 JPEGs."""
+    def _extract_clip_keyframes(self, video_path: str, facecam_corner: str) -> Tuple[List[str], bool]:
+        """
+        Extracts 3 keyframe composites (25%, 55%, 85% of clip) as base64 JPEGs
+        and checks if any frame is a Twitch purple commercial break slate.
+        """
         b64_frames: List[str] = []
+        ad_detected = False
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            return b64_frames
+            return b64_frames, False
         try:
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-            indices = [max(0, int(total * r)) for r in (0.35, 0.65, 0.85)] if total > 15 else [0]
+            indices = [max(0, int(total * r)) for r in (0.25, 0.55, 0.85)] if total > 15 else [0]
             for idx in indices:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
                 ok, frame = cap.read()
                 if ok and frame is not None:
+                    if self._is_twitch_ad_slate(frame):
+                        ad_detected = True
                     b64 = self._build_composite_b64(frame, facecam_corner)
                     if b64:
                         b64_frames.append(b64)
         finally:
             cap.release()
-        return b64_frames
+        return b64_frames, ad_detected
+
+    def _clean_and_validate_caption(self, raw_overlay: str, summary: str, streamer_name: str) -> str:
+        # Strip hashtags and quotes
+        cap = re.sub(r"#\w+", "", raw_overlay or "").strip().strip('"').strip("'").strip()
+        s_clean = streamer_name.strip()
+        if not cap or cap.lower() == s_clean.lower() or len(cap) <= len(s_clean) + 3 or cap.lower().startswith("streamer:"):
+            cap = f"{s_clean}: {summary[:65]}" if summary else f"{s_clean} pulls off an insane moment!"
+        elif any(v in cap.lower() for v in VAGUE_FILLER_PHRASES):
+            # Replace vague generic filler with concrete summary if summary is specific
+            if summary and not any(v in summary.lower() for v in VAGUE_FILLER_PHRASES):
+                cap = f"{s_clean}: {summary[:65]}"
+        if s_clean.lower() not in cap.lower():
+            cap = f"{s_clean} {cap}"
+        # Collapse accidental duplicate prefix like "xQc: xQc ..."
+        cap = re.sub(rf"^{re.escape(s_clean)}\s*:\s*{re.escape(s_clean)}\b", s_clean, cap, flags=re.IGNORECASE)
+        cap = " ".join(cap.split())
+        if len(cap) > 95:
+            cap = cap[:95].rsplit(" ", 1)[0]
+        return cap
 
     async def analyze_clip_and_generate_captions(
         self,
@@ -629,26 +736,30 @@ class VisionModelManager:
     ) -> Dict[str, str]:
         """
         Deep post-clip analysis combining:
-        - Whisper speech transcript from the clip audio
+        - Multi-frame commercial-break / ad rejection gate
+        - Whisper speech transcript from the clip audio (only when real speech detected)
         - 3 keyframes + zoomed streamer facecam
         - Live Twitch/YouTube chat reactions & slang
-        Generates an on-screen burned-in caption (always naming the streamer),
-        title, summary, and social post caption.
         """
         transcript = await asyncio.to_thread(self.transcribe_clip_audio_sync, video_path)
         fallback_kw = ", ".join(chat_keywords[:4]) if chat_keywords else "chat going crazy"
         fallback = {
-            "overlay_caption": f"{streamer_name} couldn't believe what just happened!",
-            "title": f"{streamer_name} INSANE GTA VI Moment! ({fallback_kw})",
+            "overlay_caption": f"{streamer_name} shocked chat during wild gameplay!",
+            "title": f"{streamer_name} INSANE Moment! ({fallback_kw})",
             "summary": f"{streamer_name} triggered a {chat_mps:.1f} msg/s chat spike ({fallback_kw}).",
             "caption": f"{streamer_name} went crazy! 🔥 ({fallback_kw}) #GTA6 #GTAVI #Gaming #Viral",
             "transcript": transcript,
         }
 
-        b64_frames = await asyncio.to_thread(self._extract_clip_keyframes, video_path, facecam_corner)
+        b64_frames, ad_slate_found = await asyncio.to_thread(self._extract_clip_keyframes, video_path, facecam_corner)
+        if ad_slate_found:
+            return {"reject_reason": "Twitch commercial break slate detected in clip frames"}
+
         if not b64_frames and thumb_path and os.path.isfile(thumb_path):
             img = cv2.imread(thumb_path)
             if img is not None:
+                if self._is_twitch_ad_slate(img):
+                    return {"reject_reason": "Twitch commercial break slate detected in thumbnail"}
                 b64 = self._build_composite_b64(img, facecam_corner)
                 if b64:
                     b64_frames.append(b64)
@@ -657,48 +768,48 @@ class VisionModelManager:
             return fallback
 
         chat_lines = " | ".join(chat_sample[-5:]) if chat_sample else fallback_kw
+        speech_line = f'Streamer actually said: "{transcript}"\n' if len(transcript.strip()) >= 5 else ""
         prompt = (
-            f"You are an expert Twitch/YouTube gaming clip editor with deep internet & GTA culture knowledge.\n"
+            f"You are a strict Twitch/YouTube gaming clip editor.\n"
             f"Streamer: {streamer_name}\n"
-            f"Streamer said in audio: \"{transcript or 'inaudible / yelling'}\"\n"
+            f"{speech_line}"
             f"Chat burst ({chat_mps:.1f} msg/s): {chat_lines}\n"
-            "Look at these frames from the clip (and CAM panel if present). Describe specifically what happened "
-            "and write a short, punchy on-screen caption that includes BOTH the streamer's name AND the specific action "
-            "(never write just the streamer's name alone!).\n"
+            "STEP 1 — FILTER: If ANY frame shows a commercial break, Twitch ad screen, sponsor banner, starting-soon/BRB screen, or static menu with no gameplay action, set \"is_ad_or_break\": true.\n"
+            "STEP 2 — CAPTION: Otherwise set \"is_ad_or_break\": false and write a strict, specific 6-11 word on-screen caption starting with the streamer's name that describes the exact visual action or reaction seen in the frames "
+            "(for example: 'xQc launches a car off the highway ramp' or 'Rubius gasps after losing the boss fight'). "
+            "NEVER write generic filler like 'yelling in the game', 'reacting to chat', 'commercial break', or hashtags in overlay_caption.\n"
             "Respond ONLY with valid JSON:\n"
-            '{"overlay_caption": "<6-12 words: streamer name + what happened>", '
+            '{"is_ad_or_break": <true/false>, '
+            '"overlay_caption": "<6-11 words starting with streamer name describing concrete visual action>", '
             '"title": "<catchy Shorts title with streamer name>", '
-            '"summary": "<1-2 sentence breakdown of gameplay and streamer reaction>", '
+            '"summary": "<1-2 sentence breakdown of exact gameplay and streamer reaction>", '
             '"caption": "<social post caption with #GTA6 #GTAVI #Gaming hashtags>"}'
         )
 
         sem = self._get_semaphore()
         async with sem:
-            res = await self._query_vlm_b64_images(b64_frames[:2], prompt, max_tokens=240)
+            res = await self._query_vlm_b64_images(b64_frames[:3], prompt, max_tokens=260)
 
         if not res:
             return fallback
 
-        summary = str(res.get("summary") or "").strip() or fallback["summary"]
-        overlay = str(res.get("overlay_caption") or "").strip()
-        if (
-            not overlay
-            or overlay.lower().startswith("streamer:")
-            or overlay.lower() == streamer_name.lower().strip()
-            or len(overlay) <= len(streamer_name.strip()) + 3
-        ):
-            overlay = f"{streamer_name}: {summary[:62]}" if summary else fallback["overlay_caption"]
-        elif streamer_name.lower() not in overlay.lower():
-            overlay = f"{streamer_name}: {overlay}"
+        raw_overlay = str(res.get("overlay_caption") or "").strip()
+        raw_title = str(res.get("title") or "").strip()
+        raw_summary = str(res.get("summary") or "").strip()
 
-        title = str(res.get("title") or "").strip() or overlay
+        if bool(res.get("is_ad_or_break")) or self._contains_blocked_phrase(raw_overlay, raw_title, raw_summary):
+            return {"reject_reason": f"Non-gameplay / ad break detected ({raw_summary[:80]})"}
+
+        summary = raw_summary or fallback["summary"]
+        overlay = self._clean_and_validate_caption(raw_overlay, summary, streamer_name)
+        title = raw_title or overlay
         if streamer_name.lower() not in title.lower():
             title = f"{streamer_name} — {title}"
 
         caption = str(res.get("caption") or "").strip() or f"{overlay} 🔥 #GTA6 #GTAVI #Gaming #Viral"
 
         return {
-            "overlay_caption": overlay[:110],
+            "overlay_caption": overlay,
             "title": title[:110],
             "summary": summary[:280],
             "caption": caption[:300],

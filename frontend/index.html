@@ -478,7 +478,8 @@
 
     <div class="tablist" role="tablist" aria-label="AutoClipper views">
       <button type="button" role="tab" id="tab-radar" aria-selected="true" tabindex="0">📡 Live Stream Radar</button>
-      <button type="button" role="tab" id="tab-clips" aria-selected="false" tabindex="-1">🎬 Clips &amp; Queue</button>
+      <button type="button" role="tab" id="tab-clips" aria-selected="false" tabindex="-1">🎬 Pending Library (<span id="cntPending">0</span>)</button>
+      <button type="button" role="tab" id="tab-accepted" aria-selected="false" tabindex="-1">✅ Accepted &amp; Posted (<span id="cntAccepted">0</span>)</button>
       <button type="button" role="tab" id="tab-stats" aria-selected="false" tabindex="-1">📊 Statistics &amp; Monitor</button>
       <button type="button" role="tab" id="tab-config" aria-selected="false" tabindex="-1">⚙️ Configure</button>
     </div>
@@ -541,17 +542,31 @@
       </div>
     </section>
 
-    <!-- TAB 2: CLIPS & QUEUE -->
+    <!-- TAB 2: PENDING CLIPS LIBRARY -->
     <section id="panel-clips" role="tabpanel" aria-labelledby="tab-clips" hidden>
       <div class="panel-body">
         <div class="card toolbar">
           <div>
-            <h2 style="margin:0;">🎬 Captured Clips &amp; Burned-In Captions</h2>
-            <p class="hint" style="margin:0.2rem 0 0;">Each clip is analyzed by Whisper + Qwen2.5-VL, auto-captioned with the streamer's name, rendered to Smart 9:16 Split, and sent to Discord.</p>
+            <h2 style="margin:0;">🎬 Pending Clip Library</h2>
+            <p class="hint" style="margin:0.2rem 0 0;">Commercial breaks are auto-filtered out. Accepting or posting any clip moves it out of here into <strong>✅ Accepted &amp; Posted</strong>.</p>
           </div>
           <button type="button" id="btnRefreshClips">🔄 Refresh Clips</button>
         </div>
         <div class="clips-grid" id="clipsGrid"></div>
+      </div>
+    </section>
+
+    <!-- TAB 3: ACCEPTED & POSTED CLIPS -->
+    <section id="panel-accepted" role="tabpanel" aria-labelledby="tab-accepted" hidden>
+      <div class="panel-body">
+        <div class="card toolbar">
+          <div>
+            <h2 style="margin:0;">✅ Accepted &amp; Posted Clips</h2>
+            <p class="hint" style="margin:0.2rem 0 0;">Clips you approved or published to YouTube Shorts, TikTok, and Instagram Reels.</p>
+          </div>
+          <button type="button" id="btnRefreshAccepted">🔄 Refresh Accepted</button>
+        </div>
+        <div class="clips-grid" id="acceptedClipsGrid"></div>
       </div>
     </section>
 
@@ -974,7 +989,11 @@
         document.getElementById('kpiActive').textContent = dash.active_count;
         document.getElementById('kpiFacecams').textContent = `${dash.facecam_count} / ${dash.active_count}`;
         document.getElementById('kpiMps').textContent = `${dash.total_chat_mps} msg/s`;
-        document.getElementById('kpiClips').textContent = clipsData.clips.length;
+        const pendingCount = clipsData.clips.filter((c) => c.status === 'pending').length;
+        const acceptedCount = clipsData.clips.filter((c) => c.status === 'accepted' || c.status === 'posted').length;
+        document.getElementById('cntPending').textContent = pendingCount;
+        document.getElementById('cntAccepted').textContent = acceptedCount;
+        document.getElementById('kpiClips').textContent = `${pendingCount} / ${acceptedCount}`;
 
         // Live Progress Bar
         const jobs = dash.active_jobs || [];
@@ -1166,15 +1185,14 @@
       });
     }
 
-    async function refreshClips() {
-      const data = await api('/api/clips?limit=60');
-      const grid = document.getElementById('clipsGrid');
-      if (!data.clips.length) {
-        grid.innerHTML = `<div class="card"><p class="hint">No clips captured yet. Once a watched stream spikes (80% chat + 20% vision) or you click <strong>Clip Now</strong>, clips appear here and in Discord.</p></div>`;
+    function renderClipCards(grid, clipsList, isPending) {
+      if (!clipsList.length) {
+        grid.innerHTML = `<div class="card"><p class="hint">${isPending ? 'No pending clips! Once a watched stream spikes (with commercial breaks filtered out) or you click <strong>Clip Now</strong>, new clips appear here.' : 'No accepted or posted clips yet. Accept or publish a clip from <strong>Pending Library</strong> or Discord to move it here.'}</p></div>`;
         return;
       }
-      grid.innerHTML = data.clips.map((c) => `
-        <article class="clip-card">
+
+      grid.innerHTML = clipsList.map((c) => `
+        <article class="clip-card" data-clip-card="${esc(c.id)}">
           <div class="toolbar">
             <strong>${esc(c.streamer_name)} (${esc(c.platform.toUpperCase())})</strong>
             <span class="hint">Score ${c.combined_score} • ${c.duration_sec}s • <strong>${esc(c.status.toUpperCase())}</strong></span>
@@ -1197,7 +1215,10 @@
           <div class="clip-actions">
             <button type="button" class="sm" data-save-clip="${esc(c.id)}">💾 Save Text</button>
             <button type="button" class="sm primary" data-render-clip="${esc(c.id)}">🔄 Re-Burn Caption &amp; 9:16</button>
-            <button type="button" class="sm success" data-pub-clip="${esc(c.id)}" data-plat="all">✅ Post All</button>
+            ${isPending
+              ? `<button type="button" class="sm success" data-accept-clip="${esc(c.id)}" data-next-status="accepted">✅ Accept</button>`
+              : `<button type="button" class="sm" data-accept-clip="${esc(c.id)}" data-next-status="pending">↩️ Move to Pending</button>`}
+            <button type="button" class="sm success" data-pub-clip="${esc(c.id)}" data-plat="all">🚀 Post All</button>
             <button type="button" class="sm" data-pub-clip="${esc(c.id)}" data-plat="youtube_shorts">▶️ YT</button>
             <button type="button" class="sm" data-pub-clip="${esc(c.id)}" data-plat="tiktok">🎵 TT</button>
             <button type="button" class="sm" data-pub-clip="${esc(c.id)}" data-plat="instagram">📸 IG</button>
@@ -1245,22 +1266,44 @@
         });
       });
 
+      grid.querySelectorAll('[data-accept-clip]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          b.disabled = true;
+          const cid = b.dataset.acceptClip;
+          const nextStatus = b.dataset.nextStatus;
+          await api(`/api/clips/${encodeURIComponent(cid)}/accept`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: nextStatus }),
+          });
+          showToast(nextStatus === 'accepted' ? 'Moved to Accepted & Posted!' : 'Moved back to Pending Library.');
+          refreshClips();
+          refreshRadarAndStats();
+        });
+      });
+
       grid.querySelectorAll('[data-pub-clip]').forEach((b) => {
         b.addEventListener('click', async () => {
           b.disabled = true;
-          showToast(`Publishing to ${b.dataset.plat}...`);
+          const cid = b.dataset.pubClip;
+          showToast(`Accepted & publishing to ${b.dataset.plat}...`);
+          // Remove from Pending view immediately for zero clutter
+          if (isPending) {
+            const card = grid.querySelector(`[data-clip-card="${cid}"]`);
+            if (card) card.remove();
+          }
           try {
-            const res = await api(`/api/clips/${encodeURIComponent(b.dataset.pubClip)}/publish`, {
+            const res = await api(`/api/clips/${encodeURIComponent(cid)}/publish`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ platforms: [b.dataset.plat] }),
             });
-            showToast(res.any_success ? 'Published successfully!' : 'Publish completed with errors.');
-            refreshClips();
+            showToast(res.any_success ? 'Published & moved to Accepted!' : 'Moved to Accepted (publish had errors).');
           } catch (err) {
             showToast(err.message);
           } finally {
-            b.disabled = false;
+            refreshClips();
+            refreshRadarAndStats();
           }
         });
       });
@@ -1269,7 +1312,7 @@
         b.addEventListener('click', async () => {
           try {
             await api(`/api/clips/${encodeURIComponent(b.dataset.discordClip)}/send-discord`, { method: 'POST' });
-            showToast('Sent clip to Discord for reaction review!');
+            showToast('Sent clip to Discord!');
           } catch (err) {
             showToast(err.message);
           }
@@ -1281,8 +1324,21 @@
           await api(`/api/clips/${encodeURIComponent(b.dataset.delClip)}`, { method: 'DELETE' });
           showToast('Clip deleted.');
           refreshClips();
+          refreshRadarAndStats();
         });
       });
+    }
+
+    async function refreshClips() {
+      const data = await api('/api/clips?limit=100');
+      const pending = data.clips.filter((c) => c.status === 'pending');
+      const accepted = data.clips.filter((c) => c.status === 'accepted' || c.status === 'posted');
+
+      document.getElementById('cntPending').textContent = pending.length;
+      document.getElementById('cntAccepted').textContent = accepted.length;
+
+      renderClipCards(document.getElementById('clipsGrid'), pending, true);
+      renderClipCards(document.getElementById('acceptedClipsGrid'), accepted, false);
     }
 
     async function loadSettings() {
@@ -1358,6 +1414,7 @@
     });
 
     document.getElementById('btnRefreshClips').addEventListener('click', refreshClips);
+    document.getElementById('btnRefreshAccepted').addEventListener('click', refreshClips);
 
     document.getElementById('settingsForm').addEventListener('submit', async (e) => {
       e.preventDefault();
