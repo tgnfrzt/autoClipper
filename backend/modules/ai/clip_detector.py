@@ -15,11 +15,7 @@ def compute_combined_score(chat_score: float, visual_score: float) -> float:
     """
     cw = float(settings.CHAT_WEIGHT)
     vw = float(settings.VISUAL_WEIGHT)
-    if cw > 1.0 or vw > 1.0:
-        total = max(1.0, cw + vw)
-        cw /= total
-        vw /= total
-    elif (cw + vw) > 0:
+    if (cw + vw) > 0:
         total = cw + vw
         cw /= total
         vw /= total
@@ -36,13 +32,18 @@ def save_clip_record(
     platform: str,
     stream_url: str,
     raw_path: str,
+    rendered_path: str,
     thumb_path: str,
     duration_sec: float,
     chat_score: float,
     visual_score: float,
+    facecam_score: float,
     combined_score: float,
     chat_mps: float,
     chat_keywords: List[str],
+    facecam_corner: str,
+    transcript: str,
+    overlay_caption: str,
     ai_title: str,
     ai_summary: str,
     ai_caption: str,
@@ -58,9 +59,10 @@ def save_clip_record(
             INSERT INTO clips (
                 id, stream_id, streamer_name, platform, stream_url,
                 raw_path, rendered_path, thumb_path, duration_sec,
-                chat_score, visual_score, combined_score, chat_mps, chat_keywords,
+                chat_score, visual_score, facecam_score, combined_score,
+                chat_mps, chat_keywords, facecam_corner, transcript, overlay_caption,
                 ai_title, ai_summary, ai_caption, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             """,
             (
                 clip_id,
@@ -69,13 +71,18 @@ def save_clip_record(
                 platform,
                 stream_url,
                 raw_path,
+                rendered_path,
                 thumb_path,
                 round(duration_sec, 1),
                 round(chat_score, 1),
                 round(visual_score, 1),
+                round(facecam_score, 1),
                 round(combined_score, 1),
                 round(chat_mps, 2),
                 kw_json,
+                facecam_corner,
+                transcript,
+                overlay_caption,
                 ai_title,
                 ai_summary,
                 ai_caption,
@@ -91,14 +98,18 @@ def save_clip_record(
         "platform": platform,
         "stream_url": stream_url,
         "raw_path": raw_path,
-        "rendered_path": "",
+        "rendered_path": rendered_path,
         "thumb_path": thumb_path,
         "duration_sec": round(duration_sec, 1),
         "chat_score": round(chat_score, 1),
         "visual_score": round(visual_score, 1),
+        "facecam_score": round(facecam_score, 1),
         "combined_score": round(combined_score, 1),
         "chat_mps": round(chat_mps, 2),
         "chat_keywords": chat_keywords[:8],
+        "facecam_corner": facecam_corner,
+        "transcript": transcript,
+        "overlay_caption": overlay_caption,
         "ai_title": ai_title,
         "ai_summary": ai_summary,
         "ai_caption": ai_caption,

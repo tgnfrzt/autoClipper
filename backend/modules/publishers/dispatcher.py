@@ -37,7 +37,12 @@ def publish_clip_to_platforms(clip_id: str, platforms: List[str]) -> Dict[str, A
 
     video_to_post = clip.get("rendered_path") or ""
     if not video_to_post or not os.path.isfile(video_to_post):
-        render_res = render_clip_for_social(clip["raw_path"], clip_id)
+        render_res = render_clip_for_social(
+            clip["raw_path"],
+            clip_id,
+            caption_text=clip.get("overlay_caption") or clip.get("ai_title") or "",
+            streamer_name=clip.get("streamer_name") or "",
+        )
         video_to_post = render_res["output_path"]
         conn = get_db()
         with conn:

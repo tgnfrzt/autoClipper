@@ -124,6 +124,7 @@ class Settings:
     FALLBACK_GAME_QUERY: str = _env_str("FALLBACK_GAME_QUERY", "Grand Theft Auto V")
     AUTO_DISCOVER_TWITCH: bool = _env_bool("AUTO_DISCOVER_TWITCH", True)
     AUTO_DISCOVER_YOUTUBE: bool = _env_bool("AUTO_DISCOVER_YOUTUBE", True)
+    PREFER_FACECAM_STREAMS: bool = _env_bool("PREFER_FACECAM_STREAMS", True)
     MAX_CONCURRENT_STREAMS: int = _env_int("MAX_CONCURRENT_STREAMS", 15)
     STREAM_QUALITY: str = _env_str("STREAM_QUALITY", "720p,480p,best")
     DISCOVERY_INTERVAL_SEC: int = _env_int("DISCOVERY_INTERVAL_SEC", 120)
@@ -142,21 +143,37 @@ class Settings:
     VLM_PROVIDER: str = _env_str("VLM_PROVIDER", "llamacpp")
     VLM_API_URL: str = _env_str("VLM_API_URL", "http://127.0.0.1:8081/v1")
     VLM_API_KEY: str = _env_str("VLM_API_KEY", "")
-    VLM_MODEL_NAME: str = _env_str("VLM_MODEL_NAME", "SmolVLM-500M-Instruct")
+    VLM_MODEL_NAME: str = _env_str(
+        "VLM_MODEL_NAME",
+        "Qwen2.5-VL-3B-Instruct (Q4_K_M)"
+        if (MODELS_DIR / "qwen2.5-vl-3b" / "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf").is_file()
+        else "SmolVLM-500M-Instruct (Q8_0)",
+    )
     LLAMA_SERVER_EXE: str = _env_str(
         "LLAMA_SERVER_EXE",
         r"E:\llama-cpp\llama-server.exe" if os.path.isfile(r"E:\llama-cpp\llama-server.exe") else (shutil.which("llama-server") or "llama-server"),
     )
-    VLM_MODEL_PATH: str = _env_str("VLM_MODEL_PATH", str(MODELS_DIR / "smolvlm-500m" / "SmolVLM-500M-Instruct-Q8_0.gguf"))
-    VLM_MMPROJ_PATH: str = _env_str("VLM_MMPROJ_PATH", str(MODELS_DIR / "smolvlm-500m" / "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf"))
+    VLM_MODEL_PATH: str = _env_str(
+        "VLM_MODEL_PATH",
+        str(MODELS_DIR / "qwen2.5-vl-3b" / "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf")
+        if (MODELS_DIR / "qwen2.5-vl-3b" / "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf").is_file()
+        else str(MODELS_DIR / "smolvlm-500m" / "SmolVLM-500M-Instruct-Q8_0.gguf"),
+    )
+    VLM_MMPROJ_PATH: str = _env_str(
+        "VLM_MMPROJ_PATH",
+        str(MODELS_DIR / "qwen2.5-vl-3b" / "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf")
+        if (MODELS_DIR / "qwen2.5-vl-3b" / "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf").is_file()
+        else str(MODELS_DIR / "smolvlm-500m" / "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf"),
+    )
     VLM_PORT: int = _env_int("VLM_PORT", 8081)
     VLM_AUTO_START: bool = _env_bool("VLM_AUTO_START", True)
-    VLM_CTX_SIZE: int = _env_int("VLM_CTX_SIZE", 4096)
+    VLM_CTX_SIZE: int = _env_int("VLM_CTX_SIZE", 2048)
     VLM_GPU_LAYERS: int = _env_int("VLM_GPU_LAYERS", 99)
 
     # Video Output & Smart 9:16 Gaming Split
     VIDEO_FORMAT_MODE: str = _env_str("VIDEO_FORMAT_MODE", "smart_gaming_split")
     FACECAM_POSITION: str = _env_str("FACECAM_POSITION", "auto")
+    BURN_IN_CAPTIONS: bool = _env_bool("BURN_IN_CAPTIONS", True)
     ANTI_FINGERPRINT: bool = _env_bool("ANTI_FINGERPRINT", True)
     WATERMARK_ALPHA: float = _env_float("WATERMARK_ALPHA", 0.9)
 

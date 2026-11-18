@@ -4,11 +4,13 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import cv2
 import httpx
@@ -19,40 +21,63 @@ from backend.core.config import MODELS_DIR, save_settings_to_env, settings
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 VLM_PRESETS: Dict[str, Dict[str, Any]] = {
-    "smolvlm-500m": {
-        "id": "smolvlm-500m",
-        "name": "SmolVLM-500M-Instruct (Q8_0)",
-        "size_label": "~520 MB (Ultra-Fast • <1GB VRAM)",
-        "recommended_for": "GTX 1650 / 4GB VRAM — Evaluates frames in ~200ms while watching 15+ streams",
-        "model_filename": "SmolVLM-500M-Instruct-Q8_0.gguf",
-        "mmproj_filename": "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf",
-        "model_url": "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/SmolVLM-500M-Instruct-Q8_0.gguf",
-        "mmproj_url": "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf",
-    },
     "qwen2.5-vl-3b": {
         "id": "qwen2.5-vl-3b",
         "name": "Qwen2.5-VL-3B-Instruct (Q4_K_M)",
-        "size_label": "~2.6 GB (High Detail • Fits 4GB VRAM)",
-        "recommended_for": "Higher visual accuracy for GTA VI HUD/events & viral title generation",
+        "size_label": "~2.65 GB (Recommended • Internet/Meme Aware • Fits 4GB VRAM)",
+        "recommended_for": "Best accuracy for shocked facecam expressions, GTA action & viral captions",
         "model_filename": "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
         "mmproj_filename": "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
         "model_url": "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
         "mmproj_url": "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
+    },
+    "smolvlm-500m": {
+        "id": "smolvlm-500m",
+        "name": "SmolVLM-500M-Instruct (Q8_0)",
+        "size_label": "~520 MB (Ultra-Light • <1GB VRAM)",
+        "recommended_for": "Ultra-fast fallback for older GPUs (<2GB VRAM)",
+        "model_filename": "SmolVLM-500M-Instruct-Q8_0.gguf",
+        "mmproj_filename": "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf",
+        "model_url": "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/SmolVLM-500M-Instruct-Q8_0.gguf",
+        "mmproj_url": "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf",
     },
 }
 
 
 class VisionModelManager:
     """
-    Manages the lightweight local VLM (via llama-server.exe or any OpenAI-compatible API)
-    combined with ultra-fast OpenCV visual action analysis for the 20% visual score.
+    Manages the local VLM (Qwen2.5-VL-3B-Instruct or SmolVLM via llama-server.exe / OpenAI API),
+    OpenCV facecam reaction detection, side-by-side facecam+gameplay compositing,
+    and post-clip Whisper + VLM caption generation.
     """
 
     def __init__(self) -> None:
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.RLock()
         self._prev_frames: Dict[str, np.ndarray] = {}
+        self._prev_facecams: Dict[str, np.ndarray] = {}
+        self._facecam_cache: Dict[str, Dict[str, Any]] = {}
         self._vlm_semaphore: Optional[asyncio.Semaphore] = None
+        self._whisper_model: Any = None
+        self._whisper_lock = threading.Lock()
+        cascade_cls = getattr(cv2, "CascadeClassifier", None)
+        cascade_xml = (
+            os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+            if hasattr(cv2, "data")
+            else ""
+        )
+        self._face_cascade = (
+            cascade_cls(cascade_xml)
+            if (cascade_cls is not None and cascade_xml and os.path.isfile(cascade_xml))
+            else None
+        )
+
+        # Telemetry metrics for Statistics & Monitor UI
+        self.total_evaluations: int = 0
+        self.vlm_evaluations: int = 0
+        self.last_latency_ms: int = 0
+        self._latencies_ms: Deque[int] = deque(maxlen=50)
+        self._last_error: str = ""
         self._download_state: Dict[str, Any] = {
             "active": False,
             "preset_id": "",
@@ -62,12 +87,22 @@ class VisionModelManager:
             "total_mb": 0.0,
             "error": "",
         }
-        self._last_error: str = ""
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         if self._vlm_semaphore is None:
             self._vlm_semaphore = asyncio.Semaphore(1)
         return self._vlm_semaphore
+
+    def get_telemetry(self) -> Dict[str, Any]:
+        avg_ms = int(sum(self._latencies_ms) / len(self._latencies_ms)) if self._latencies_ms else 0
+        detected_facecams = sum(1 for v in self._facecam_cache.values() if v.get("has_facecam"))
+        return {
+            "total_evaluations": self.total_evaluations,
+            "vlm_evaluations": self.vlm_evaluations,
+            "last_latency_ms": self.last_latency_ms,
+            "avg_latency_ms": avg_ms,
+            "facecams_detected": detected_facecams,
+        }
 
     def list_presets(self) -> List[Dict[str, Any]]:
         items = []
@@ -75,7 +110,12 @@ class VisionModelManager:
             pdir = MODELS_DIR / pid
             mpath = pdir / p["model_filename"]
             mmpath = pdir / p["mmproj_filename"]
-            installed = mpath.is_file() and mpath.stat().st_size > 10_000_000 and mmpath.is_file() and mmpath.stat().st_size > 5_000_000
+            installed = (
+                mpath.is_file()
+                and mpath.stat().st_size > 10_000_000
+                and mmpath.is_file()
+                and mmpath.stat().st_size > 5_000_000
+            )
             items.append(
                 {
                     **p,
@@ -91,7 +131,6 @@ class VisionModelManager:
         if settings.VLM_PROVIDER == "opencv_only":
             return True
         base = settings.VLM_API_URL.rstrip("/")
-        # Try /health (llama.cpp) or /models (OpenAI-compatible)
         root = base[:-3] if base.endswith("/v1") else base
         for url in (f"{root}/health", f"{base}/models"):
             try:
@@ -108,16 +147,14 @@ class VisionModelManager:
     def get_status(self) -> Dict[str, Any]:
         running_pid = self._proc.pid if (self._proc and self._proc.poll() is None) else None
         healthy = self.is_server_healthy()
-        model_exists = os.path.isfile(settings.VLM_MODEL_PATH)
-        mmproj_exists = os.path.isfile(settings.VLM_MMPROJ_PATH)
         return {
             "provider": settings.VLM_PROVIDER,
             "api_url": settings.VLM_API_URL,
             "model_name": settings.VLM_MODEL_NAME,
             "model_path": settings.VLM_MODEL_PATH,
             "mmproj_path": settings.VLM_MMPROJ_PATH,
-            "model_exists": model_exists,
-            "mmproj_exists": mmproj_exists,
+            "model_exists": os.path.isfile(settings.VLM_MODEL_PATH),
+            "mmproj_exists": os.path.isfile(settings.VLM_MMPROJ_PATH),
             "llama_server_exe": settings.LLAMA_SERVER_EXE,
             "llama_server_found": os.path.isfile(settings.LLAMA_SERVER_EXE),
             "port": settings.VLM_PORT,
@@ -126,23 +163,23 @@ class VisionModelManager:
             "last_error": self._last_error,
             "download": dict(self._download_state),
             "presets": self.list_presets(),
+            "telemetry": self.get_telemetry(),
         }
 
     def start_local_server(self) -> Tuple[bool, str]:
         if settings.VLM_PROVIDER != "llamacpp":
             return True, f"Using external provider '{settings.VLM_PROVIDER}'."
-
         if self.is_server_healthy():
             return True, "Local VLM server is already online."
 
         exe = settings.LLAMA_SERVER_EXE
         if not os.path.isfile(exe):
-            msg = f"llama-server.exe not found at {exe}. Set LLAMA_SERVER_EXE in Configure or switch to OpenAI/Ollama API."
+            msg = f"llama-server.exe not found at {exe}. Set LLAMA_SERVER_EXE in Configure."
             self._last_error = msg
             return False, msg
 
         if not os.path.isfile(settings.VLM_MODEL_PATH):
-            msg = f"Model GGUF not found at {settings.VLM_MODEL_PATH}. Download a preset in Configure first."
+            msg = f"Model GGUF not found at {settings.VLM_MODEL_PATH}. Download a preset in Configure."
             self._last_error = msg
             return False, msg
 
@@ -157,6 +194,8 @@ class VisionModelManager:
                 "--alias", settings.VLM_MODEL_NAME or Path(settings.VLM_MODEL_PATH).stem,
                 "-c", str(settings.VLM_CTX_SIZE),
                 "-ngl", str(settings.VLM_GPU_LAYERS),
+                "--fit", "on",
+                "--fit-target", "384",
                 "--host", "127.0.0.1",
                 "--port", str(settings.VLM_PORT),
                 "-np", "1",
@@ -179,8 +218,7 @@ class VisionModelManager:
                 self._last_error = str(exc)
                 return False, f"Failed to launch llama-server: {exc}"
 
-        # Wait briefly for readiness (small 500M model loads in ~2-4s)
-        for _ in range(30):
+        for _ in range(45):
             if self._proc and self._proc.poll() is not None:
                 self._last_error = "llama-server exited unexpectedly. Check storage/vlm_server.log."
                 return False, self._last_error
@@ -229,7 +267,7 @@ class VisionModelManager:
                 ):
                     self._download_state["file"] = label
                     tmp_dst = dst.with_suffix(".part")
-                    with httpx.stream("GET", url, follow_redirects=True, timeout=120.0) as r:
+                    with httpx.stream("GET", url, follow_redirects=True, timeout=180.0) as r:
                         r.raise_for_status()
                         total = int(r.headers.get("content-length") or 0)
                         done = 0
@@ -265,47 +303,135 @@ class VisionModelManager:
         return True, f"Started downloading {preset['name']}..."
 
     # ------------------------------------------------------------------
-    # Fast OpenCV Visual Scoring + VLM Semantic Evaluation
+    # Facecam Corner Detection, Reaction Scoring & OpenCV Action Scoring
     # ------------------------------------------------------------------
-    def compute_opencv_action_score(self, stream_id: str, image_path: str) -> Dict[str, Any]:
+    def _crop_corner(self, img: np.ndarray, corner: str) -> np.ndarray:
+        h, w = img.shape[:2]
+        cw = max(64, int(w * 0.28))
+        ch = max(48, int(h * 0.34))
+        if corner == "top_left":
+            return img[0:ch, 0:cw]
+        if corner == "top_right":
+            return img[0:ch, w - cw:w]
+        if corner == "bottom_left":
+            return img[h - ch:h, 0:cw]
+        return img[h - ch:h, w - cw:w]
+
+    def inspect_facecam_and_motion(self, stream_id: str, image_path: str) -> Dict[str, Any]:
         """
-        Ultra-fast (<5ms) visual excitement heuristic:
-        - Frame-to-frame motion intensity (explosions, fast driving, camera shake)
-        - Sudden luminance flash (gunfire, explosions, scene cuts)
-        - High-saturation red/alert screen flashes (GTA Wasted / Wanted / Combat)
+        Detects corner facecam presence (with sticky hysteresis across frames),
+        computes overall gameplay motion/flash score, and computes a separate
+        facecam_reaction_score from sudden movement inside the streamer's webcam box.
         """
         img = cv2.imread(image_path)
         if img is None:
-            return {"cv_score": 0.0, "motion": 0.0, "flash": 0.0, "red_alert": 0.0}
+            return {
+                "cv_score": 0.0,
+                "motion": 0.0,
+                "flash": 0.0,
+                "has_facecam": False,
+                "facecam_corner": "",
+                "facecam_score": 0.0,
+                "img": None,
+            }
 
+        h, w = img.shape[:2]
         small = cv2.resize(img, (256, 144))
-        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        gray_small = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
+        # 1. Gameplay motion + flash + red intensity
         motion_score = 0.0
         flash_score = 0.0
         prev = self._prev_frames.get(stream_id)
-        if prev is not None and prev.shape == gray.shape:
-            diff = cv2.absdiff(gray, prev)
+        if prev is not None and prev.shape == gray_small.shape:
+            diff = cv2.absdiff(gray_small, prev)
             mean_diff = float(np.mean(diff))
             motion_pct = float(np.mean(diff > 28)) * 100.0
             motion_score = min(100.0, mean_diff * 2.2 + motion_pct * 0.8)
-            lum_delta = abs(float(np.mean(gray)) - float(np.mean(prev)))
-            flash_score = min(100.0, lum_delta * 2.8)
-        self._prev_frames[stream_id] = gray
+            flash_score = min(100.0, abs(float(np.mean(gray_small)) - float(np.mean(prev))) * 2.8)
+        self._prev_frames[stream_id] = gray_small
 
-        # Red intensity check (explosions, health critical, GTA Wasted tint)
         b, g, r = cv2.split(small.astype(np.float32))
         red_excess = np.maximum(0.0, r - 0.55 * (g + b))
         red_score = min(100.0, float(np.mean(red_excess)) * 2.5)
+        cv_score = round(min(100.0, 0.55 * motion_score + 0.30 * flash_score + 0.15 * red_score), 1)
 
-        cv_score = min(100.0, 0.55 * motion_score + 0.30 * flash_score + 0.15 * red_score)
+        # 2. Corner Facecam Detection with Hysteresis
+        cache = self._facecam_cache.setdefault(stream_id, {"has_facecam": False, "corner": "", "hits": 0})
+        gray_full = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        if self._face_cascade is not None and not self._face_cascade.empty():
+            faces = self._face_cascade.detectMultiScale(gray_full, scaleFactor=1.15, minNeighbors=4, minSize=(26, 26))
+            detected_corner = ""
+            for (fx, fy, fw, fh) in faces:
+                cx = (fx + fw * 0.5) / w
+                cy = (fy + fh * 0.5) / h
+                if cx <= 0.34 and cy <= 0.44:
+                    detected_corner = "top_left"
+                    break
+                if cx >= 0.66 and cy <= 0.44:
+                    detected_corner = "top_right"
+                    break
+                if cx <= 0.34 and cy >= 0.56:
+                    detected_corner = "bottom_left"
+                    break
+                if cx >= 0.66 and cy >= 0.56:
+                    detected_corner = "bottom_right"
+                    break
+            if detected_corner:
+                cache["corner"] = detected_corner
+                cache["hits"] = min(10, cache["hits"] + 2)
+                cache["has_facecam"] = True
+            else:
+                cache["hits"] = max(0, cache["hits"] - 1)
+                if cache["hits"] == 0 and not cache["corner"]:
+                    cache["has_facecam"] = False
+
+        # 3. Compute Facecam Reaction Score (sudden webcam motion when streamer reacts/jumps/yells)
+        facecam_score = 0.0
+        if cache["has_facecam"] and cache["corner"]:
+            cam_crop = self._crop_corner(img, cache["corner"])
+            cam_gray = cv2.resize(cv2.cvtColor(cam_crop, cv2.COLOR_BGR2GRAY), (96, 72))
+            prev_cam = self._prev_facecams.get(stream_id)
+            if prev_cam is not None and prev_cam.shape == cam_gray.shape:
+                cam_diff = cv2.absdiff(cam_gray, prev_cam)
+                cam_motion_pct = float(np.mean(cam_diff > 22)) * 100.0
+                cam_mean = float(np.mean(cam_diff))
+                facecam_score = round(min(100.0, cam_mean * 3.0 + cam_motion_pct * 1.4), 1)
+            self._prev_facecams[stream_id] = cam_gray
+
         return {
-            "cv_score": round(cv_score, 1),
+            "cv_score": cv_score,
             "motion": round(motion_score, 1),
             "flash": round(flash_score, 1),
-            "red_alert": round(red_score, 1),
+            "has_facecam": bool(cache["has_facecam"]),
+            "facecam_corner": cache["corner"],
+            "facecam_score": facecam_score,
+            "img": img,
         }
 
+    def _build_composite_b64(self, img: np.ndarray, facecam_corner: str) -> str:
+        """
+        Builds a compact composite image for Qwen2.5-VL-3B:
+        If a facecam corner is present, places [Gameplay (256x192) | Zoomed Facecam (160x192)] side-by-side
+        so the VLM sees BOTH the game scene and the streamer's facial expression clearly!
+        """
+        if facecam_corner:
+            game_panel = cv2.resize(img, (256, 192))
+            cam_raw = self._crop_corner(img, facecam_corner)
+            cam_panel = cv2.resize(cam_raw, (160, 192))
+            cv2.putText(cam_panel, "CAM", (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+            composite = np.hstack([game_panel, cam_panel])
+        else:
+            composite = cv2.resize(img, (320, 180))
+
+        ok, buf = cv2.imencode(".jpg", composite, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+        if not ok:
+            return ""
+        return base64.b64encode(buf.tobytes()).decode("ascii")
+
+    # ------------------------------------------------------------------
+    # Real-Time Visual Evaluation (20% Signal)
+    # ------------------------------------------------------------------
     async def evaluate_frame(
         self,
         stream_id: str,
@@ -314,144 +440,282 @@ class VisionModelManager:
         chat_context: str = "",
         force_vlm: bool = False,
     ) -> Dict[str, Any]:
-        """
-        Evaluates a stream frame for the 20% visual component.
-        Combines OpenCV visual action metrics with local VLM semantic inspection.
-        """
         if not os.path.isfile(image_path):
-            return {"visual_score": 0.0, "cv_score": 0.0, "vlm_score": None, "event": "no_frame", "summary": ""}
-
-        cv_res = self.compute_opencv_action_score(stream_id, image_path)
-
-        if settings.VLM_PROVIDER == "opencv_only":
             return {
-                "visual_score": cv_res["cv_score"],
-                "cv_score": cv_res["cv_score"],
+                "visual_score": 0.0,
+                "cv_score": 0.0,
                 "vlm_score": None,
-                "event": "visual_action" if cv_res["cv_score"] >= 55 else "gameplay",
-                "summary": f"Motion {cv_res['motion']}% | Flash {cv_res['flash']}%",
+                "has_facecam": False,
+                "facecam_corner": "",
+                "facecam_score": 0.0,
+                "latency_ms": 0,
+                "event": "no_frame",
+                "summary": "",
             }
 
-        # Only call VLM if server is reachable (and either forced or periodic)
-        if not self.is_server_healthy():
+        self.total_evaluations += 1
+        cv_res = self.inspect_facecam_and_motion(stream_id, image_path)
+
+        base_fallback_score = (
+            round(min(100.0, 0.65 * cv_res["cv_score"] + 0.35 * cv_res["facecam_score"]), 1)
+            if cv_res["has_facecam"]
+            else cv_res["cv_score"]
+        )
+
+        if settings.VLM_PROVIDER == "opencv_only" or not self.is_server_healthy():
             return {
-                "visual_score": cv_res["cv_score"],
+                "visual_score": base_fallback_score,
                 "cv_score": cv_res["cv_score"],
                 "vlm_score": None,
-                "event": "vlm_offline_fallback",
-                "summary": f"OpenCV fallback (Motion {cv_res['motion']}%)",
+                "has_facecam": cv_res["has_facecam"],
+                "facecam_corner": cv_res["facecam_corner"],
+                "facecam_score": cv_res["facecam_score"],
+                "latency_ms": 0,
+                "event": "opencv_only" if settings.VLM_PROVIDER == "opencv_only" else "vlm_offline",
+                "summary": f"Motion {cv_res['motion']}% | Cam {cv_res['facecam_score']}%",
             }
 
         sem = self._get_semaphore()
         if sem.locked() and not force_vlm:
             return {
-                "visual_score": cv_res["cv_score"],
+                "visual_score": base_fallback_score,
                 "cv_score": cv_res["cv_score"],
                 "vlm_score": None,
-                "event": "vlm_busy_fallback",
-                "summary": f"OpenCV fast-path (Motion {cv_res['motion']}%)",
+                "has_facecam": cv_res["has_facecam"],
+                "facecam_corner": cv_res["facecam_corner"],
+                "facecam_score": cv_res["facecam_score"],
+                "latency_ms": 0,
+                "event": "opencv_fastpath",
+                "summary": f"Motion {cv_res['motion']}% | Cam {cv_res['facecam_score']}%",
             }
 
+        img = cv_res["img"]
+        b64 = self._build_composite_b64(img, cv_res["facecam_corner"]) if img is not None else ""
+        if not b64:
+            return {
+                "visual_score": base_fallback_score,
+                "cv_score": cv_res["cv_score"],
+                "vlm_score": None,
+                "has_facecam": cv_res["has_facecam"],
+                "facecam_corner": cv_res["facecam_corner"],
+                "facecam_score": cv_res["facecam_score"],
+                "latency_ms": 0,
+                "event": "encode_skip",
+                "summary": "",
+            }
+
+        cam_hint = (
+            "The right panel labeled CAM is a zoomed crop of the streamer's facecam. "
+            "Pay special attention to shocked, screaming, laughing, or hyped facial reactions!"
+            if cv_res["facecam_corner"]
+            else ""
+        )
+        prompt = (
+            f"Analyze this live GTA / gaming stream frame from {streamer_name or 'streamer'}. {cam_hint}\n"
+            f"Chat hype right now: {chat_context or 'normal'}.\n"
+            "Score 0-100 for how clip-worthy/exciting the scene & streamer reaction are "
+            "(0=menu/AFK, 40=normal gameplay, 75=police chase/crash/shocked facecam/gunfight, 95=explosion/WASTED/insane stunt/screaming reaction).\n"
+            'Respond ONLY with compact JSON: {"visual_score": <0-100>, "event": "<2-4 words>", "summary": "<short 1 sentence>"}'
+        )
+
+        t0 = time.time()
         async with sem:
-            vlm_res = await self._query_vlm_image(
-                image_path=image_path,
-                prompt=(
-                    f"You are analyzing a live gaming livestream frame from {streamer_name or 'a streamer'} playing GTA VI / GTA.\n"
-                    f"Recent chat hype context: {chat_context or 'normal chat'}.\n"
-                    "Rate how visually exciting, chaotic, funny, or clip-worthy this frame is on a 0-100 scale "
-                    "(0=menu/loading/sitting idle, 40=normal driving/walking, 75=police chase/gunfight/crash/reaction, "
-                    "95=huge explosion/WASTED/insane stunt/shocked streamer).\n"
-                    'Respond ONLY with compact JSON: {"visual_score": <int 0-100>, "event": "<2-4 words>", "summary": "<short 1-sentence description>"}'
-                ),
-            )
+            vlm_res = await self._query_vlm_b64_images([b64], prompt)
+        latency_ms = int((time.time() - t0) * 1000)
 
         if vlm_res is None:
             return {
-                "visual_score": cv_res["cv_score"],
+                "visual_score": base_fallback_score,
                 "cv_score": cv_res["cv_score"],
                 "vlm_score": None,
+                "has_facecam": cv_res["has_facecam"],
+                "facecam_corner": cv_res["facecam_corner"],
+                "facecam_score": cv_res["facecam_score"],
+                "latency_ms": latency_ms,
                 "event": "vlm_timeout",
                 "summary": f"OpenCV fallback (Motion {cv_res['motion']}%)",
             }
 
-        vlm_score = float(max(0.0, min(100.0, vlm_res.get("visual_score", cv_res["cv_score"]))))
-        blended_visual = round(0.70 * vlm_score + 0.30 * cv_res["cv_score"], 1)
+        self.vlm_evaluations += 1
+        self.last_latency_ms = latency_ms
+        self._latencies_ms.append(latency_ms)
+
+        vlm_score = float(max(0.0, min(100.0, vlm_res.get("visual_score", base_fallback_score))))
+        if cv_res["has_facecam"]:
+            blended = round(min(100.0, 0.65 * vlm_score + 0.20 * cv_res["cv_score"] + 0.15 * cv_res["facecam_score"]), 1)
+        else:
+            blended = round(min(100.0, 0.75 * vlm_score + 0.25 * cv_res["cv_score"]), 1)
+
         return {
-            "visual_score": blended_visual,
+            "visual_score": blended,
             "cv_score": cv_res["cv_score"],
             "vlm_score": vlm_score,
+            "has_facecam": cv_res["has_facecam"],
+            "facecam_corner": cv_res["facecam_corner"],
+            "facecam_score": cv_res["facecam_score"],
+            "latency_ms": latency_ms,
             "event": str(vlm_res.get("event", "gameplay"))[:60],
             "summary": str(vlm_res.get("summary", ""))[:220],
         }
 
-    async def generate_clip_metadata(
+    # ------------------------------------------------------------------
+    # Post-Clip Audio Transcription + Deep Scene Captioning
+    # ------------------------------------------------------------------
+    def transcribe_clip_audio_sync(self, video_path: str) -> str:
+        """Uses local CPU faster-whisper (tiny.en int8, 0 VRAM) to transcribe what the streamer yelled."""
+        if not os.path.isfile(video_path):
+            return ""
+        try:
+            from faster_whisper import WhisperModel
+
+            with self._whisper_lock:
+                if self._whisper_model is None:
+                    self._whisper_model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
+
+            # Extract last 28 seconds mono 16kHz wav for fast reliable transcription
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+                wav_path = tf.name
+            try:
+                cmd = [
+                    settings.FFMPEG_PATH,
+                    "-y", "-hide_banner", "-loglevel", "error",
+                    "-sseof", "-28",
+                    "-i", video_path,
+                    "-vn", "-ac", "1", "-ar", "16000",
+                    wav_path,
+                ]
+                res = subprocess.run(cmd, capture_output=True, timeout=20, creationflags=CREATE_NO_WINDOW)
+                if res.returncode != 0 or not os.path.isfile(wav_path) or os.path.getsize(wav_path) < 2000:
+                    return ""
+                segments, _ = self._whisper_model.transcribe(wav_path, beam_size=1, vad_filter=True)
+                text = " ".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
+                return text[:350]
+            finally:
+                if os.path.isfile(wav_path):
+                    os.remove(wav_path)
+        except Exception as exc:
+            print(f"[Whisper] Transcription note: {exc}")
+            return ""
+
+    def _extract_clip_keyframes(self, video_path: str, facecam_corner: str) -> List[str]:
+        """Extracts 3 keyframe composites (35%, 65%, 85% of clip) as base64 JPEGs."""
+        b64_frames: List[str] = []
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return b64_frames
+        try:
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            indices = [max(0, int(total * r)) for r in (0.35, 0.65, 0.85)] if total > 15 else [0]
+            for idx in indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    b64 = self._build_composite_b64(frame, facecam_corner)
+                    if b64:
+                        b64_frames.append(b64)
+        finally:
+            cap.release()
+        return b64_frames
+
+    async def analyze_clip_and_generate_captions(
         self,
-        image_paths: List[str],
+        video_path: str,
+        thumb_path: str,
         streamer_name: str,
+        facecam_corner: str,
         chat_keywords: List[str],
+        chat_sample: List[str],
         chat_mps: float,
     ) -> Dict[str, str]:
-        """Generates a viral clip title, summary, and social caption using the VLM."""
+        """
+        Deep post-clip analysis combining:
+        - Whisper speech transcript from the clip audio
+        - 3 keyframes + zoomed streamer facecam
+        - Live Twitch/YouTube chat reactions & slang
+        Generates an on-screen burned-in caption (always naming the streamer),
+        title, summary, and social post caption.
+        """
+        transcript = await asyncio.to_thread(self.transcribe_clip_audio_sync, video_path)
         fallback_kw = ", ".join(chat_keywords[:4]) if chat_keywords else "chat going crazy"
         fallback = {
+            "overlay_caption": f"{streamer_name} couldn't believe what just happened!",
             "title": f"{streamer_name} INSANE GTA VI Moment! ({fallback_kw})",
-            "summary": f"Chat spiked to {chat_mps:.1f} msg/s ({fallback_kw}).",
-            "caption": f"{streamer_name} went crazy in GTA VI! 🤯🔥 ({fallback_kw}) #GTA6 #GTAVI #Gaming #Viral",
+            "summary": f"{streamer_name} triggered a {chat_mps:.1f} msg/s chat spike ({fallback_kw}).",
+            "caption": f"{streamer_name} went crazy! 🔥 ({fallback_kw}) #GTA6 #GTAVI #Gaming #Viral",
+            "transcript": transcript,
         }
 
-        valid_imgs = [p for p in image_paths if p and os.path.isfile(p)][:2]
-        if not valid_imgs or settings.VLM_PROVIDER == "opencv_only" or not self.is_server_healthy():
+        b64_frames = await asyncio.to_thread(self._extract_clip_keyframes, video_path, facecam_corner)
+        if not b64_frames and thumb_path and os.path.isfile(thumb_path):
+            img = cv2.imread(thumb_path)
+            if img is not None:
+                b64 = self._build_composite_b64(img, facecam_corner)
+                if b64:
+                    b64_frames.append(b64)
+
+        if not b64_frames or settings.VLM_PROVIDER == "opencv_only" or not self.is_server_healthy():
             return fallback
+
+        chat_lines = " | ".join(chat_sample[-5:]) if chat_sample else fallback_kw
+        prompt = (
+            f"You are an expert Twitch/YouTube gaming clip editor with deep internet & GTA culture knowledge.\n"
+            f"Streamer: {streamer_name}\n"
+            f"Streamer said in audio: \"{transcript or 'inaudible / yelling'}\"\n"
+            f"Chat burst ({chat_mps:.1f} msg/s): {chat_lines}\n"
+            "Look at these frames from the clip (and CAM panel if present). Describe specifically what happened "
+            "and write a short, punchy on-screen caption that includes BOTH the streamer's name AND the specific action "
+            "(never write just the streamer's name alone!).\n"
+            "Respond ONLY with valid JSON:\n"
+            '{"overlay_caption": "<6-12 words: streamer name + what happened>", '
+            '"title": "<catchy Shorts title with streamer name>", '
+            '"summary": "<1-2 sentence breakdown of gameplay and streamer reaction>", '
+            '"caption": "<social post caption with #GTA6 #GTAVI #Gaming hashtags>"}'
+        )
 
         sem = self._get_semaphore()
         async with sem:
-            res = await self._query_vlm_multi_images(
-                image_paths=valid_imgs,
-                prompt=(
-                    "Describe what is happening on screen in this livestream frame in one short sentence. "
-                    'Return JSON: {"title": "<4-8 word exciting headline>", "summary": "<one sentence describing what is visible>"}'
-                ),
-            )
+            res = await self._query_vlm_b64_images(b64_frames[:2], prompt, max_tokens=240)
+
         if not res:
             return fallback
 
-        raw_title = str(res.get("title") or "").strip()
-        raw_summary = str(res.get("summary") or "").strip()
-        if not raw_title or raw_title.lower().startswith("streamer:"):
-            title = f"{streamer_name}: {raw_summary[:55]}" if raw_summary else fallback["title"]
-        else:
-            title = f"{streamer_name} — {raw_title}"
+        summary = str(res.get("summary") or "").strip() or fallback["summary"]
+        overlay = str(res.get("overlay_caption") or "").strip()
+        if (
+            not overlay
+            or overlay.lower().startswith("streamer:")
+            or overlay.lower() == streamer_name.lower().strip()
+            or len(overlay) <= len(streamer_name.strip()) + 3
+        ):
+            overlay = f"{streamer_name}: {summary[:62]}" if summary else fallback["overlay_caption"]
+        elif streamer_name.lower() not in overlay.lower():
+            overlay = f"{streamer_name}: {overlay}"
 
-        summary = raw_summary or fallback["summary"]
-        caption = f"{title} 🔥 ({fallback_kw}) #GTA6 #GTAVI #Gaming #Viral"
+        title = str(res.get("title") or "").strip() or overlay
+        if streamer_name.lower() not in title.lower():
+            title = f"{streamer_name} — {title}"
+
+        caption = str(res.get("caption") or "").strip() or f"{overlay} 🔥 #GTA6 #GTAVI #Gaming #Viral"
+
         return {
-            "title": title[:100],
-            "summary": f"{summary} (Chat: {chat_mps:.1f} msg/s)"[:280],
+            "overlay_caption": overlay[:110],
+            "title": title[:110],
+            "summary": summary[:280],
             "caption": caption[:300],
+            "transcript": transcript,
         }
 
-    async def _query_vlm_image(self, image_path: str, prompt: str) -> Optional[Dict[str, Any]]:
-        return await self._query_vlm_multi_images([image_path], prompt)
-
-    async def _query_vlm_multi_images(self, image_paths: List[str], prompt: str) -> Optional[Dict[str, Any]]:
-        content_parts: List[Dict[str, Any]] = []
-        for path in image_paths:
-            try:
-                img = cv2.imread(path)
-                if img is None:
-                    continue
-                h, w = img.shape[:2]
-                if w > 320:
-                    scale = 320.0 / w
-                    img = cv2.resize(img, (320, max(64, int(h * scale))))
-                ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                if not ok:
-                    continue
-                b64 = base64.b64encode(buf.tobytes()).decode("ascii")
-                content_parts.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
-            except Exception:
-                continue
-
+    async def _query_vlm_b64_images(
+        self,
+        b64_images: List[str],
+        prompt: str,
+        max_tokens: int = 180,
+    ) -> Optional[Dict[str, Any]]:
+        content_parts: List[Dict[str, Any]] = [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+            for b64 in b64_images
+            if b64
+        ]
         if not content_parts:
             return None
         content_parts.append({"type": "text", "text": prompt})
@@ -464,12 +728,12 @@ class VisionModelManager:
         payload = {
             "model": settings.VLM_MODEL_NAME or "local-vlm",
             "messages": [{"role": "user", "content": content_parts}],
-            "temperature": 0.2,
-            "max_tokens": 180,
+            "temperature": 0.25,
+            "max_tokens": max_tokens,
         }
 
         try:
-            async with httpx.AsyncClient(timeout=35.0) as client:
+            async with httpx.AsyncClient(timeout=45.0) as client:
                 r = await client.post(url, json=payload, headers=headers)
                 if r.status_code != 200:
                     self._last_error = f"VLM HTTP {r.status_code}: {r.text[:160]}"
@@ -498,10 +762,9 @@ class VisionModelManager:
                     return obj
             except Exception:
                 pass
-        # Heuristic parse if small VLM returned plain text with a number
         num_match = re.search(r"\b(\d{1,3})\b", cleaned)
         score = min(100, int(num_match.group(1))) if num_match else 45
-        return {"visual_score": score, "event": "vlm_text", "summary": cleaned[:160]}
+        return {"visual_score": score, "event": "vlm_text", "summary": cleaned[:180]}
 
 
 vision_manager = VisionModelManager()

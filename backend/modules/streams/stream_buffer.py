@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from backend.core.config import BUFFERS_DIR, THUMBS_DIR, settings
+from backend.utils.ffmpeg_runner import probe_video
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
@@ -98,6 +99,19 @@ class StreamRingBuffer:
     def buffered_seconds(self) -> int:
         segs = self.get_segments_ordered()
         return max(0, (len(segs) - 1) * settings.SEGMENT_DURATION_SEC)
+
+    def segments_count(self) -> int:
+        return len(self.get_segments_ordered())
+
+    def buffer_size_mb(self) -> float:
+        segs = self.get_segments_ordered()
+        total_b = sum(p.stat().st_size for p in segs if p.is_file())
+        return round(total_b / (1024 * 1024), 2)
+
+    def pid(self) -> Optional[int]:
+        if self.proc and self.proc.poll() is None:
+            return self.proc.pid
+        return None
 
     async def ensure_started(self) -> bool:
         if self.is_running() or self._starting:
@@ -203,12 +217,17 @@ class StreamRingBuffer:
 
         # Exclude newest segment in case ffmpeg is actively writing it
         completed = segs[:-1]
-        seg_sec = max(2, int(settings.SEGMENT_DURATION_SEC))
+        try:
+            detected_seg = float(probe_video(str(completed[-1])).get("duration") or settings.SEGMENT_DURATION_SEC)
+        except Exception:
+            detected_seg = float(settings.SEGMENT_DURATION_SEC)
+        seg_sec = max(2.0, detected_seg)
         needed_segs = max(2, min(len(completed), int(round(duration_sec / seg_sec))))
         chosen = completed[-needed_segs:]
 
         os.makedirs(os.path.dirname(output_mp4), exist_ok=True)
         concat_file = self.buf_dir / f"concat_{int(time.time())}.txt"
+        raw_concat = output_mp4 + ".concat.mp4"
         try:
             with open(concat_file, "w", encoding="utf-8") as f:
                 for p in chosen:
@@ -226,21 +245,40 @@ class StreamRingBuffer:
                 "-c", "copy",
                 "-bsf:a", "aac_adtstoasc",
                 "-movflags", "+faststart",
-                output_mp4,
+                raw_concat,
             ]
             res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=45, creationflags=CREATE_NO_WINDOW)
-            if res.returncode != 0 or not os.path.isfile(output_mp4):
-                # Retry without aac_adtstoasc if audio codec differs
+            if res.returncode != 0 or not os.path.isfile(raw_concat):
                 cmd_retry = [c for c in cmd if c not in ("-bsf:a", "aac_adtstoasc")]
                 res = subprocess.run(cmd_retry, capture_output=True, text=True, errors="replace", timeout=45, creationflags=CREATE_NO_WINDOW)
-                if res.returncode != 0 or not os.path.isfile(output_mp4):
+                if res.returncode != 0 or not os.path.isfile(raw_concat):
                     return False, 0.0, (res.stderr or "FFmpeg concat failed").strip()
 
-            actual_dur = float(len(chosen) * seg_sec)
+            actual_dur = float(probe_video(raw_concat).get("duration") or (len(chosen) * seg_sec))
+            if actual_dur > duration_sec + 4.0:
+                trim_cmd = [
+                    settings.FFMPEG_PATH,
+                    "-y", "-hide_banner", "-loglevel", "error",
+                    "-sseof", f"-{duration_sec}",
+                    "-i", raw_concat,
+                    "-c", "copy",
+                    "-movflags", "+faststart",
+                    output_mp4,
+                ]
+                t_res = subprocess.run(trim_cmd, capture_output=True, timeout=30, creationflags=CREATE_NO_WINDOW)
+                if t_res.returncode == 0 and os.path.isfile(output_mp4):
+                    os.remove(raw_concat)
+                    actual_dur = float(probe_video(output_mp4).get("duration") or duration_sec)
+                    return True, actual_dur, ""
+
+            if os.path.isfile(output_mp4):
+                os.remove(output_mp4)
+            os.replace(raw_concat, output_mp4)
             return True, actual_dur, ""
         finally:
-            try:
-                if concat_file.exists():
-                    concat_file.unlink()
-            except Exception:
-                pass
+            for tmp_p in (concat_file, Path(raw_concat)):
+                try:
+                    if tmp_p.exists():
+                        tmp_p.unlink()
+                except Exception:
+                    pass

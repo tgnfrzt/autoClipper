@@ -7,13 +7,14 @@ Local-first multi-stream AI AutoClipper built to monitor **tens of Twitch & YouT
 ## ✨ Key Features
 
 - **Multi-Stream Zero-Decode Ring Buffer**: Uses `streamlink` / `yt-dlp` + `ffmpeg -c copy` circular MPEG-TS segments (~90s rolling window per stream). Watching 15–25 live streams uses **0% GPU** and minimal CPU.
-- **80% Chat Hype Velocity + 20% AI Visual Evaluation**:
+- **80% Chat Hype Velocity + 20% AI Visual & Facecam Reaction Evaluation**:
   - **Twitch Anonymous WebSocket IRC** + **YouTube Live Chat Innertube Poller** (no Twitch/YouTube API keys required) compute adaptive baseline z-scores and hype-keyword density (`OMG`, `WTF`, `CLIP IT`, `WASTED`, `6 STARS`, etc.).
-  - **Lightweight Local VLM** (`SmolVLM-500M-Instruct` or `Qwen2.5-VL-3B-Instruct` via `llama-server`, or any OpenAI-compatible API) + **OpenCV Motion/Flash Scoring** inspects live keyframes every few seconds without saturating 4GB VRAM.
-- **Smart 9:16 Gaming Split Video Formatter**:
-  - Automatically detects streamer corner facecams via OpenCV and builds a **1080×1920** split layout (top `1080×620` facecam + bottom `1080×1300` centered gameplay).
-  - Automatically switches to an **Action-Zoomed 9:16 Gameplay Canvas** if no corner facecam is present, or supports Classic 9:16 Blur and Original 16:9.
-  - Uses NVIDIA **NVENC (`h264_nvenc`)** hardware encoding with automatic CPU fallback.
+  - **Local Vision AI (`Qwen2.5-VL-3B-Instruct` recommended or `SmolVLM-500M-Instruct` via `llama-server`)** inspects side-by-side `[Gameplay | 2.5x Zoomed Facecam]` frames so it recognizes both game action and shocked streamer reactions while staying inside 4GB VRAM.
+  - **Facecam-First Preference**: Auto-detects streamer facecams via OpenCV, prioritizes facecam streams in active buffer slots, and scores sudden webcam motion spikes.
+- **Post-Clip Whisper + Burned-In Streamer Captions & Smart 9:16 Split**:
+  - Transcribes what the streamer shouted via CPU `faster-whisper`, analyzes 3 keyframes + chat slang, generates a short punchy caption naming the streamer, and burns it crisply onto the **1080×1920 Smart 9:16 Gaming Split** video using NVIDIA **NVENC (`h264_nvenc`)** (with automatic `libx264` CPU fallback).
+- **Live Statistics & System Monitor Dashboard**:
+  - Real-time clip pipeline progress bars, per-stream FFmpeg PID / buffer MB / facecam / chat baseline diagnostics table, and live engine activity console.
 - **Discord Review Bot**:
   - Sends every captured clip directly to your Discord channel/DM with AI title, hype breakdown, and inline video preview.
   - React with:

@@ -14,9 +14,10 @@ psutil>=6.0.0
 streamlink>=7.0.0
 yt-dlp>=2025.1.1
 
-# Visual inspection & facecam detection
-opencv-python-headless>=4.10.0
+# Visual inspection, facecam detection & audio transcription
+opencv-python-headless>=4.10.0,<5.0.0
 pillow>=10.4.0
+faster-whisper>=1.0.0
 
 # Discord Bot
 discord.py>=2.4.0

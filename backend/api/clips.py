@@ -16,6 +16,7 @@ router = APIRouter(prefix="/api/clips", tags=["clips"])
 
 
 class ClipUpdateRequest(BaseModel):
+    overlay_caption: Optional[str] = None
     ai_title: Optional[str] = None
     ai_caption: Optional[str] = None
 
@@ -23,6 +24,7 @@ class ClipUpdateRequest(BaseModel):
 class ClipRenderRequest(BaseModel):
     format_mode: Optional[str] = None
     facecam_position: Optional[str] = None
+    caption_text: Optional[str] = None
 
 
 class ClipPublishRequest(BaseModel):
@@ -76,6 +78,8 @@ def update_clip_metadata(clip_id: str, req: ClipUpdateRequest) -> Dict[str, Any]
         raise HTTPException(status_code=404, detail="Clip not found")
     conn = get_db()
     with conn:
+        if req.overlay_caption is not None:
+            conn.execute("UPDATE clips SET overlay_caption = ? WHERE id = ?", (req.overlay_caption, clip_id))
         if req.ai_title is not None:
             conn.execute("UPDATE clips SET ai_title = ? WHERE id = ?", (req.ai_title, clip_id))
         if req.ai_caption is not None:
@@ -89,16 +93,20 @@ async def render_clip(clip_id: str, req: ClipRenderRequest) -> Dict[str, Any]:
     clip = get_clip(clip_id)
     if not clip:
         raise HTTPException(status_code=404, detail="Clip not found")
+    cap_txt = req.caption_text if req.caption_text is not None else (clip.get("overlay_caption") or clip.get("ai_title") or "")
     res = await asyncio.to_thread(
         render_clip_for_social,
         clip["raw_path"],
         clip_id,
         req.format_mode,
         req.facecam_position,
+        None,
+        cap_txt,
+        clip.get("streamer_name") or "",
     )
     conn = get_db()
     with conn:
-        conn.execute("UPDATE clips SET rendered_path = ? WHERE id = ?", (res["output_path"], clip_id))
+        conn.execute("UPDATE clips SET rendered_path = ?, overlay_caption = ? WHERE id = ?", (res["output_path"], cap_txt, clip_id))
     conn.close()
     return {"success": True, **res}
 

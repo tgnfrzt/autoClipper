@@ -199,10 +199,14 @@ class DiscordClipBotService:
             url=clip.get("stream_url") or None,
             color=0x10B981,
         )
+        if clip.get("overlay_caption"):
+            embed.add_field(name="On-Screen Caption", value=f"**{clip['overlay_caption']}**", inline=False)
+        if clip.get("transcript"):
+            embed.add_field(name="Streamer Said", value=f"\"{clip['transcript'][:200]}\"", inline=False)
         embed.add_field(name="Streamer", value=f"{clip['streamer_name']} ({clip['platform'].upper()})", inline=True)
         embed.add_field(
             name="Hype Score (80/20)",
-            value=f"**{clip['combined_score']}/100** (Chat {clip['chat_score']} • Visual {clip['visual_score']})",
+            value=f"**{clip['combined_score']}/100** (Chat {clip['chat_score']} • Vision {clip['visual_score']} • Cam {clip.get('facecam_score', 0)})",
             inline=True,
         )
         embed.add_field(

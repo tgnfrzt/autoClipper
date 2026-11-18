@@ -10,6 +10,7 @@ from backend.core.config import THUMBS_DIR, save_settings_to_env
 from backend.core.database import fetch_all_streamers, get_db, upsert_streamer
 from backend.modules.streams.discovery import check_twitch_channel_live, check_youtube_target_live
 from backend.modules.streams.manager import stream_manager
+from backend.api.ai_models import _get_hardware_telemetry
 
 router = APIRouter(prefix="/api/streams", tags=["streams"])
 
@@ -33,6 +34,13 @@ class EngineToggleRequest(BaseModel):
 @router.get("/dashboard")
 def get_live_dashboard() -> Dict[str, Any]:
     return stream_manager.get_dashboard_snapshot()
+
+
+@router.get("/telemetry")
+def get_system_telemetry() -> Dict[str, Any]:
+    snap = stream_manager.get_telemetry_snapshot()
+    snap["hardware"] = _get_hardware_telemetry()
+    return snap
 
 
 @router.get("/watchlist")

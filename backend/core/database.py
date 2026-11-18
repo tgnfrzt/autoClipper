@@ -43,6 +43,8 @@ def init_db() -> None:
                 viewer_count INTEGER NOT NULL DEFAULT 0,
                 title TEXT DEFAULT '',
                 game_name TEXT DEFAULT '',
+                has_facecam INTEGER NOT NULL DEFAULT 0,
+                facecam_corner TEXT DEFAULT '',
                 last_checked_at TEXT DEFAULT '',
                 created_at TEXT NOT NULL
             );
@@ -59,9 +61,13 @@ def init_db() -> None:
                 duration_sec REAL DEFAULT 0.0,
                 chat_score REAL DEFAULT 0.0,
                 visual_score REAL DEFAULT 0.0,
+                facecam_score REAL DEFAULT 0.0,
                 combined_score REAL DEFAULT 0.0,
                 chat_mps REAL DEFAULT 0.0,
                 chat_keywords TEXT DEFAULT '[]',
+                facecam_corner TEXT DEFAULT '',
+                transcript TEXT DEFAULT '',
+                overlay_caption TEXT DEFAULT '',
                 ai_title TEXT DEFAULT '',
                 ai_summary TEXT DEFAULT '',
                 ai_caption TEXT DEFAULT '',
@@ -82,6 +88,21 @@ def init_db() -> None:
             );
             """
         )
+
+        # Idempotent schema migrations for existing SQLite databases
+        migrations = [
+            "ALTER TABLE streamers ADD COLUMN has_facecam INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE streamers ADD COLUMN facecam_corner TEXT DEFAULT ''",
+            "ALTER TABLE clips ADD COLUMN facecam_score REAL DEFAULT 0.0",
+            "ALTER TABLE clips ADD COLUMN facecam_corner TEXT DEFAULT ''",
+            "ALTER TABLE clips ADD COLUMN transcript TEXT DEFAULT ''",
+            "ALTER TABLE clips ADD COLUMN overlay_caption TEXT DEFAULT ''",
+        ]
+        for sql in migrations:
+            try:
+                conn.execute(sql)
+            except Exception:
+                pass
 
         cur = conn.execute("SELECT COUNT(*) FROM streamers")
         if cur.fetchone()[0] == 0:
@@ -105,17 +126,31 @@ def dict_from_row(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
     return {k: row[k] for k in row.keys()}
 
 
-def fetch_all_streamers(enabled_only: bool = False) -> List[Dict[str, Any]]:
+def fetch_all_streamers(enabled_only: bool = False, prefer_facecam: Optional[bool] = None) -> List[Dict[str, Any]]:
     conn = get_db()
     try:
         q = "SELECT * FROM streamers"
         if enabled_only:
             q += " WHERE enabled = 1"
-        q += " ORDER BY is_live DESC, is_manual DESC, priority DESC, viewer_count DESC"
+        use_fc = settings.PREFER_FACECAM_STREAMS if prefer_facecam is None else prefer_facecam
+        if use_fc:
+            q += " ORDER BY is_live DESC, has_facecam DESC, is_manual DESC, priority DESC, viewer_count DESC"
+        else:
+            q += " ORDER BY is_live DESC, is_manual DESC, priority DESC, viewer_count DESC"
         rows = conn.execute(q).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def update_streamer_facecam(stream_id: str, has_facecam: bool, corner: str = "") -> None:
+    conn = get_db()
+    with conn:
+        conn.execute(
+            "UPDATE streamers SET has_facecam = ?, facecam_corner = ? WHERE id = ?",
+            (1 if has_facecam else 0, corner, stream_id),
+        )
+    conn.close()
 
 
 def upsert_streamer(

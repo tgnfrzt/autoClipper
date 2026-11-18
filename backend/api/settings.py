@@ -35,6 +35,7 @@ class SettingsUpdateRequest(BaseModel):
     FALLBACK_GAME_QUERY: Optional[str] = None
     AUTO_DISCOVER_TWITCH: Optional[bool] = None
     AUTO_DISCOVER_YOUTUBE: Optional[bool] = None
+    PREFER_FACECAM_STREAMS: Optional[bool] = None
     MAX_CONCURRENT_STREAMS: Optional[int] = None
     STREAM_QUALITY: Optional[str] = None
     DISCOVERY_INTERVAL_SEC: Optional[int] = None
@@ -59,6 +60,7 @@ class SettingsUpdateRequest(BaseModel):
 
     VIDEO_FORMAT_MODE: Optional[str] = None
     FACECAM_POSITION: Optional[str] = None
+    BURN_IN_CAPTIONS: Optional[bool] = None
     ANTI_FINGERPRINT: Optional[bool] = None
     WATERMARK_ALPHA: Optional[float] = None
 
@@ -114,6 +116,7 @@ def get_all_settings() -> Dict[str, Any]:
         "FALLBACK_GAME_QUERY": settings.FALLBACK_GAME_QUERY,
         "AUTO_DISCOVER_TWITCH": settings.AUTO_DISCOVER_TWITCH,
         "AUTO_DISCOVER_YOUTUBE": settings.AUTO_DISCOVER_YOUTUBE,
+        "PREFER_FACECAM_STREAMS": settings.PREFER_FACECAM_STREAMS,
         "MAX_CONCURRENT_STREAMS": settings.MAX_CONCURRENT_STREAMS,
         "STREAM_QUALITY": settings.STREAM_QUALITY,
         "DISCOVERY_INTERVAL_SEC": settings.DISCOVERY_INTERVAL_SEC,
@@ -135,6 +138,7 @@ def get_all_settings() -> Dict[str, Any]:
         "VLM_AUTO_START": settings.VLM_AUTO_START,
         "VIDEO_FORMAT_MODE": settings.VIDEO_FORMAT_MODE,
         "FACECAM_POSITION": settings.FACECAM_POSITION,
+        "BURN_IN_CAPTIONS": settings.BURN_IN_CAPTIONS,
         "ANTI_FINGERPRINT": settings.ANTI_FINGERPRINT,
         "WATERMARK_ALPHA": settings.WATERMARK_ALPHA,
         "DISCORD_BOT_TOKEN": settings.DISCORD_BOT_TOKEN,

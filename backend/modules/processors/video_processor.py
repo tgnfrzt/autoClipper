@@ -1,24 +1,132 @@
 import os
 import shutil
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
+from PIL import Image, ImageDraw, ImageFont
 
 from backend.core.config import CLIPS_RENDERED_DIR, get_watermark_path, settings
 from backend.utils.ffmpeg_runner import get_fast_encoder_args, probe_video, run_ffmpeg
 
 
+def _load_bold_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    candidates = [
+        r"C:\Windows\Fonts\segoeuib.ttf",
+        r"C:\Windows\Fonts\arialbd.ttf",
+        r"C:\Windows\Fonts\calibrib.ttf",
+        r"C:\Windows\Fonts\impact.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            try:
+                return ImageFont.truetype(path, size=size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
+
+
+def _create_caption_overlay_png(
+    caption_text: str,
+    streamer_name: str = "",
+    width: int = 1080,
+    height: int = 1920,
+    y_center: int = 620,
+) -> Optional[str]:
+    """
+    Generates a crisp 1080x1920 transparent PNG caption card with the streamer's name
+    highlighted in gold and dark pill backing so it reads cleanly over gameplay.
+    """
+    clean = " ".join((caption_text or "").split()).strip()
+    if not clean:
+        return None
+
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font = _load_bold_font(42)
+
+    max_text_w = int(width * 0.84)
+    words = clean.split(" ")
+    lines: List[str] = []
+    cur_line = ""
+    for w in words:
+        test = f"{cur_line} {w}".strip()
+        bbox = draw.textbbox((0, 0), test, font=font)
+        if (bbox[2] - bbox[0]) <= max_text_w or not cur_line:
+            cur_line = test
+        else:
+            lines.append(cur_line)
+            cur_line = w
+    if cur_line:
+        lines.append(cur_line)
+    lines = lines[:3]
+
+    line_heights: List[int] = []
+    line_widths: List[int] = []
+    for ln in lines:
+        bb = draw.textbbox((0, 0), ln, font=font)
+        line_widths.append(bb[2] - bb[0])
+        line_heights.append(max(46, (bb[3] - bb[1]) + 10))
+
+    line_gap = 8
+    total_text_h = sum(line_heights) + line_gap * max(0, len(lines) - 1)
+    box_w = min(width - 64, max(line_widths) + 64)
+    box_h = total_text_h + 44
+    box_x0 = (width - box_w) // 2
+    box_y0 = max(32, min(height - box_h - 32, y_center - box_h // 2))
+    box_x1 = box_x0 + box_w
+    box_y1 = box_y0 + box_h
+
+    # Subtle shadow + pill container + indigo accent outline
+    draw.rounded_rectangle(
+        (box_x0 + 4, box_y0 + 6, box_x1 + 4, box_y1 + 6),
+        radius=26,
+        fill=(0, 0, 0, 150),
+    )
+    draw.rounded_rectangle(
+        (box_x0, box_y0, box_x1, box_y1),
+        radius=26,
+        fill=(11, 15, 25, 228),
+        outline=(99, 102, 241, 255),
+        width=4,
+    )
+
+    s_lower = (streamer_name or "").strip().lower()
+    cur_y = box_y0 + 22
+    for idx, ln in enumerate(lines):
+        lw = line_widths[idx]
+        cur_x = (width - lw) // 2
+        tokens = ln.split(" ")
+        for t_idx, tok in enumerate(tokens):
+            tok_str = tok + (" " if t_idx < len(tokens) - 1 else "")
+            is_streamer = bool(s_lower and s_lower in tok.lower())
+            color = (251, 191, 36, 255) if is_streamer else (248, 250, 252, 255)
+            draw.text((cur_x + 2, cur_y + 2), tok_str, font=font, fill=(0, 0, 0, 180))
+            draw.text((cur_x, cur_y), tok_str, font=font, fill=color)
+            tb = draw.textbbox((0, 0), tok_str, font=font)
+            cur_x += (tb[2] - tb[0])
+        cur_y += line_heights[idx] + line_gap
+
+    fd, png_path = tempfile.mkstemp(prefix="cap_", suffix=".png")
+    os.close(fd)
+    img.save(png_path, "PNG")
+    return png_path
+
+
 def _detect_facecam_corner(video_path: str, width: int, height: int) -> Optional[str]:
-    """
-    Samples 3 frames across the clip and checks the 4 corner regions with OpenCV Haar cascade
-    to detect if the streamer has a corner facecam overlay.
-    """
     if width <= 0 or height <= 0:
         return None
     try:
+        cascade_cls = getattr(cv2, "CascadeClassifier", None)
+        if cascade_cls is None or not hasattr(cv2, "data"):
+            return None
         cascade_path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
-        face_cascade = cv2.CascadeClassifier(cascade_path)
+        if not os.path.isfile(cascade_path):
+            return None
+        face_cascade = cascade_cls(cascade_path)
         if face_cascade.empty():
             return None
 
@@ -46,11 +154,10 @@ def _detect_facecam_corner(video_path: str, width: int, height: int) -> Optional
             if not ok or frame is None:
                 continue
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=4, minSize=(36, 36))
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=4, minSize=(30, 30))
             for (fx, fy, fw, fh) in faces:
                 cx = (fx + fw * 0.5) / width
                 cy = (fy + fh * 0.5) / height
-                # Check if face lies in outer corner webcam zones
                 is_left = cx <= 0.34
                 is_right = cx >= 0.66
                 is_top = cy <= 0.44
@@ -72,7 +179,6 @@ def _detect_facecam_corner(video_path: str, width: int, height: int) -> Optional
 
 
 def _corner_crop_expr(corner: str, width: int, height: int) -> Tuple[int, int, int, int]:
-    """Returns (cw, ch, cx, cy) for a corner facecam box."""
     cw = max(160, int(width * 0.28) // 2 * 2)
     ch = max(120, int(height * 0.32) // 2 * 2)
     if corner == "top_left":
@@ -92,13 +198,12 @@ def render_clip_for_social(
     format_mode: Optional[str] = None,
     facecam_position: Optional[str] = None,
     anti_fingerprint: Optional[bool] = None,
+    caption_text: Optional[str] = None,
+    streamer_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Formats a raw clip according to the configured video mode:
-    - smart_gaming_split (default): Top 1080x620 facecam + Bottom 1080x1300 gameplay,
-      or Action-Zoomed 9:16 gameplay over blurred canvas if no corner facecam detected.
-    - blurred_9_16: Full 16:9 centered on 1080x1920 blurred background (AutoPoster style).
-    - original_16_9: Keeps original horizontal 16:9 layout.
+    Formats a raw clip into Smart 9:16 Gaming Split (or blurred 9:16 / original 16:9)
+    and optionally burns in a crisp on-screen caption banner naming the streamer.
     """
     if not os.path.isfile(raw_path):
         raise FileNotFoundError(f"Raw clip not found: {raw_path}")
@@ -114,7 +219,7 @@ def render_clip_for_social(
     src_w = info["width"] or 1280
     src_h = info["height"] or 720
 
-    if mode == "original_16_9":
+    if mode == "original_16_9" and not (settings.BURN_IN_CAPTIONS and caption_text):
         shutil.copy2(raw_path, out_path)
         rendered_info = probe_video(out_path)
         return {
@@ -127,7 +232,6 @@ def render_clip_for_social(
             "size_bytes": rendered_info["size_bytes"],
         }
 
-    # Determine facecam corner if smart_gaming_split
     detected_corner: Optional[str] = None
     if mode == "smart_gaming_split":
         if cam_pref in ("top_left", "top_right", "bottom_left", "bottom_right"):
@@ -135,10 +239,14 @@ def render_clip_for_social(
         elif cam_pref == "auto":
             detected_corner = _detect_facecam_corner(raw_path, src_w, src_h)
 
-    target_w, target_h = 1080, 1920
+    target_w, target_h = (src_w, src_h) if mode == "original_16_9" else (1080, 1920)
     wm_path = get_watermark_path()
 
-    if mode == "smart_gaming_split" and detected_corner:
+    caption_y = 620
+    if mode == "original_16_9":
+        filter_complex = f"[0:v]setsar=1[base]"
+        caption_y = max(90, int(target_h * 0.14))
+    elif mode == "smart_gaming_split" and detected_corner:
         cw, ch, cx, cy = _corner_crop_expr(detected_corner, src_w, src_h)
         gw = max(320, int(src_w * 0.62) // 2 * 2)
         gx = max(0, ((src_w - gw) // 2) // 2 * 2)
@@ -157,8 +265,8 @@ def render_clip_for_social(
             f"[cam][game]vstack=inputs=2,"
             f"drawbox=x=0:y=618:w=1080:h=4:color=#6366f1@0.95:t=fill{af_filter}[base]"
         )
+        caption_y = 620
     elif mode == "smart_gaming_split":
-        # Pure gameplay without facecam: action-zoomed center crop over fast blurred 9:16 canvas
         gw = max(320, int(src_w * 0.72) // 2 * 2)
         gx = max(0, ((src_w - gw) // 2) // 2 * 2)
         af_fg = (
@@ -173,8 +281,8 @@ def render_clip_for_social(
             f"scale=1080:1350:force_original_aspect_ratio=decrease,setsar=1{af_fg}[fg];"
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base]"
         )
+        caption_y = 250
     else:
-        # blurred_9_16 (AutoPoster classic)
         af_fg = (
             ",scale=iw*1.02:ih*1.02,crop=iw/1.02:ih/1.02,"
             "eq=contrast=1.03:brightness=0.008:saturation=1.04,noise=alls=2:allf=t+u"
@@ -187,36 +295,51 @@ def render_clip_for_social(
             f"[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,setsar=1{af_fg}[fg];"
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base]"
         )
+        caption_y = 320
 
     last_v = "[base]"
     inputs = ["-i", raw_path]
     next_idx = 1
 
-    if wm_path and os.path.isfile(wm_path):
-        inputs.extend(["-loop", "1", "-i", wm_path])
-        filter_complex += (
-            f";[{next_idx}:v]format=rgba,colorchannelmixer=aa={settings.WATERMARK_ALPHA},scale=240:-1[wm];"
-            f"{last_v}[wm]overlay=48:H-h-360:shortest=1[v_wm]"
+    caption_png: Optional[str] = None
+    if settings.BURN_IN_CAPTIONS and caption_text:
+        caption_png = _create_caption_overlay_png(
+            caption_text=caption_text,
+            streamer_name=streamer_name or "",
+            width=target_w,
+            height=target_h,
+            y_center=caption_y,
         )
-        last_v = "[v_wm]"
-        next_idx += 1
 
-    args = list(inputs)
-    if not info["has_audio"]:
-        args.extend(["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"])
-        audio_map = f"{next_idx}:a"
-    else:
-        if use_af:
-            filter_complex += ";[0:a]atempo=1.005[outa]"
-            audio_map = "[outa]"
+    try:
+        if caption_png and os.path.isfile(caption_png):
+            inputs.extend(["-loop", "1", "-i", caption_png])
+            filter_complex += f";{last_v}[{next_idx}:v]overlay=0:0:shortest=1[v_cap]"
+            last_v = "[v_cap]"
+            next_idx += 1
+
+        if wm_path and os.path.isfile(wm_path):
+            inputs.extend(["-loop", "1", "-i", wm_path])
+            filter_complex += (
+                f";[{next_idx}:v]format=rgba,colorchannelmixer=aa={settings.WATERMARK_ALPHA},scale=240:-1[wm];"
+                f"{last_v}[wm]overlay=48:H-h-360:shortest=1[v_wm]"
+            )
+            last_v = "[v_wm]"
+            next_idx += 1
+
+        args = list(inputs)
+        if not info["has_audio"]:
+            args.extend(["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"])
+            audio_map = f"{next_idx}:a"
         else:
-            audio_map = "0:a"
+            if use_af:
+                filter_complex += ";[0:a]atempo=1.005[outa]"
+                audio_map = "[outa]"
+            else:
+                audio_map = "0:a"
 
-    encoder_args = get_fast_encoder_args(quality=21)
-    args.extend(
-        ["-filter_complex", filter_complex, "-map", last_v, "-map", audio_map]
-        + encoder_args
-        + [
+        encoder_args = get_fast_encoder_args(quality=21)
+        tail_args = [
             "-movflags", "+faststart",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
@@ -226,26 +349,35 @@ def render_clip_for_social(
             "-shortest",
             out_path,
         ]
-    )
-
-    run_ffmpeg(args, timeout=300)
-    rendered_info = probe_video(out_path)
-    return {
-        "output_path": out_path,
-        "mode": mode,
-        "facecam_used": detected_corner or "none",
-        "duration": rendered_info["duration"],
-        "width": rendered_info["width"],
-        "height": rendered_info["height"],
-        "size_bytes": rendered_info["size_bytes"],
-    }
+        base_cmd = ["-filter_complex", filter_complex, "-map", last_v, "-map", audio_map]
+        try:
+            run_ffmpeg(args + base_cmd + encoder_args + tail_args, timeout=300)
+        except RuntimeError:
+            if "h264_nvenc" in encoder_args:
+                cpu_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21"]
+                run_ffmpeg(args + base_cmd + cpu_args + tail_args, timeout=300)
+            else:
+                raise
+        rendered_info = probe_video(out_path)
+        return {
+            "output_path": out_path,
+            "mode": mode,
+            "facecam_used": detected_corner or "none",
+            "caption_burned": bool(caption_png),
+            "duration": rendered_info["duration"],
+            "width": rendered_info["width"],
+            "height": rendered_info["height"],
+            "size_bytes": rendered_info["size_bytes"],
+        }
+    finally:
+        if caption_png and os.path.isfile(caption_png):
+            try:
+                os.remove(caption_png)
+            except Exception:
+                pass
 
 
 def ensure_discord_attachable_mp4(video_path: str, max_mb: float = 7.8) -> str:
-    """
-    Discord non-boosted channels allow 8-10MB uploads. If the clip exceeds max_mb,
-    creates a compressed 720p preview copy for Discord so the video always embeds cleanly.
-    """
     if not os.path.isfile(video_path):
         return video_path
     size_mb = os.path.getsize(video_path) / (1024 * 1024)
@@ -256,7 +388,6 @@ def ensure_discord_attachable_mp4(video_path: str, max_mb: float = 7.8) -> str:
     preview_path = str(p.with_name(f"{p.stem}_discord.mp4"))
     info = probe_video(video_path)
     dur = max(10.0, info["duration"] or 45.0)
-    # Calculate target video bitrate in kbps for ~7.2 MB total
     target_total_kbps = int((7.2 * 8192) / dur)
     target_v_kbps = max(450, min(2200, target_total_kbps - 96))
 
