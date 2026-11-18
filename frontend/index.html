@@ -537,6 +537,7 @@
         <span class="pill"><span class="dot" id="dotEngine"></span><span id="lblEngine">Engine: ...</span></span>
         <span class="pill"><span class="dot" id="dotVlm"></span><span id="lblVlm">VLM: ...</span></span>
         <span class="pill"><span class="dot" id="dotDiscord"></span><span id="lblDiscord">Discord: ...</span></span>
+        <span class="pill"><span class="dot" id="dotAutoPost"></span><span id="lblAutoPostGuard">Auto-Post: ...</span></span>
         <span class="pill" id="lblHw">GPU: ...</span>
       </div>
     </header>
@@ -599,6 +600,7 @@
                 <option value="60">60 Streams</option>
               </select>
               <label class="check-row" style="min-height:auto;font-size:0.82rem;"><input type="checkbox" id="quickPreferEnglish" /> 🇬🇧 Prefer EN</label>
+              <label class="check-row" style="min-height:auto;font-size:0.82rem;"><input type="checkbox" id="quickAutoPost" /> 🤖 Auto-Post ≥<span id="lblAutoThresh">88</span></label>
               <button type="button" id="btnDiscoverNow">🔍 Discover Live Streams</button>
               <button type="button" id="btnToggleEngine" class="success">⏸ Pause Engine</button>
             </div>
@@ -797,6 +799,32 @@
                 <label class="check-row"><input type="checkbox" id="cfg_PREFER_FACECAM_STREAMS" name="PREFER_FACECAM_STREAMS" /> Prefer Facecam Streams (higher priority + reaction score)</label>
                 <label class="check-row"><input type="checkbox" id="cfg_AUTO_DISCOVER_TWITCH" name="AUTO_DISCOVER_TWITCH" /> Auto-discover Top Twitch Streams</label>
                 <label class="check-row"><input type="checkbox" id="cfg_AUTO_DISCOVER_YOUTUBE" name="AUTO_DISCOVER_YOUTUBE" /> Auto-discover Top YouTube Live Streams</label>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>🤖 Smart Auto-Post &amp; Anti-Ban / Anti-Flag Protection</legend>
+            <div class="form-grid">
+              <div class="field" style="justify-content:flex-end;">
+                <label class="check-row"><input type="checkbox" id="cfg_AUTO_POST_ENABLED" name="AUTO_POST_ENABLED" /> Enable Smart Auto-Post for Viral Clips</label>
+                <span class="hint">Only auto-posts clips above the viral hype threshold, subject to strict cooldowns so social accounts are not flagged. Clips caught by cooldown are saved safely to Accepted.</span>
+              </div>
+              <div class="field">
+                <label for="cfg_AUTO_POST_THRESHOLD">Viral Auto-Post Threshold (80 - 98)</label>
+                <input id="cfg_AUTO_POST_THRESHOLD" name="AUTO_POST_THRESHOLD" type="number" step="1" min="75" max="98" />
+              </div>
+              <div class="field">
+                <label for="cfg_AUTO_POST_MIN_INTERVAL_MIN">Min Gap Between Auto-Posts (minutes)</label>
+                <input id="cfg_AUTO_POST_MIN_INTERVAL_MIN" name="AUTO_POST_MIN_INTERVAL_MIN" type="number" min="5" max="180" />
+              </div>
+              <div class="field">
+                <label for="cfg_AUTO_POST_MAX_PER_HOUR">Max Auto-Posts Per Hour</label>
+                <input id="cfg_AUTO_POST_MAX_PER_HOUR" name="AUTO_POST_MAX_PER_HOUR" type="number" min="1" max="10" />
+              </div>
+              <div class="field">
+                <label for="cfg_AUTO_POST_MAX_PER_DAY">Max Auto-Posts Per 24 Hours</label>
+                <input id="cfg_AUTO_POST_MAX_PER_DAY" name="AUTO_POST_MAX_PER_DAY" type="number" min="1" max="40" />
               </div>
             </div>
           </fieldset>
@@ -1102,6 +1130,24 @@
         const qEnEl = document.getElementById('quickPreferEnglish');
         if (qEnEl && document.activeElement !== qEnEl && dash.prefer_english !== undefined) {
           qEnEl.checked = Boolean(dash.prefer_english);
+        }
+        const qApEl = document.getElementById('quickAutoPost');
+        if (qApEl && document.activeElement !== qApEl && dash.autopost_enabled !== undefined) {
+          qApEl.checked = Boolean(dash.autopost_enabled);
+        }
+        if (dash.autopost_threshold !== undefined) {
+          document.getElementById('lblAutoThresh').textContent = Math.round(dash.autopost_threshold);
+        }
+        const guard = dash.autopost_guard || {};
+        if (!dash.autopost_enabled) {
+          document.getElementById('dotAutoPost').className = 'dot warn';
+          document.getElementById('lblAutoPostGuard').textContent = 'Auto-Post: Off';
+        } else if (guard.can_post) {
+          document.getElementById('dotAutoPost').className = 'dot ok';
+          document.getElementById('lblAutoPostGuard').textContent = `Auto-Post: Ready (${guard.clips_last_hour}/${guard.max_per_hour}h)`;
+        } else {
+          document.getElementById('dotAutoPost').className = 'dot warn';
+          document.getElementById('lblAutoPostGuard').textContent = `Shield: ${guard.reason}`;
         }
 
         const btnToggle = document.getElementById('btnToggleEngine');
@@ -1716,6 +1762,17 @@
         body: JSON.stringify({ PREFER_ENGLISH_STREAMS: val }),
       });
       showToast(val ? 'Prioritizing English + top streamers!' : 'Sorting purely by viewers & facecam.');
+      refreshRadarAndStats();
+    });
+
+    document.getElementById('quickAutoPost').addEventListener('change', async (e) => {
+      const val = Boolean(e.target.checked);
+      await api('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ AUTO_POST_ENABLED: val }),
+      });
+      showToast(val ? 'Smart Auto-Post enabled (with Anti-Ban rate guard)!' : 'Auto-Post paused (clips go to Discord / Library only).');
       refreshRadarAndStats();
     });
 

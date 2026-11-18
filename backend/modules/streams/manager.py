@@ -12,6 +12,7 @@ from backend.core.database import fetch_all_streamers, get_db, update_streamer_f
 from backend.modules.ai.clip_detector import compute_combined_score, save_clip_record
 from backend.modules.ai.vision_evaluator import vision_manager
 from backend.modules.processors.video_processor import auto_trim_to_action_start, render_clip_for_social
+from backend.modules.publishers.dispatcher import check_autopost_rate_limit
 from backend.modules.streams.chat_monitor import chat_monitor
 from backend.modules.streams.discovery import (
     check_twitch_channel_live,
@@ -575,6 +576,9 @@ class StreamManagerService:
             "prefer_facecam": settings.PREFER_FACECAM_STREAMS,
             "prefer_english": settings.PREFER_ENGLISH_STREAMS,
             "max_concurrent_streams": settings.MAX_CONCURRENT_STREAMS,
+            "autopost_enabled": settings.AUTO_POST_ENABLED,
+            "autopost_threshold": settings.AUTO_POST_THRESHOLD,
+            "autopost_guard": check_autopost_rate_limit(),
             "active_count": len(active),
             "facecam_count": sum(1 for s in active if s["has_facecam"]),
             "total_chat_mps": total_mps,

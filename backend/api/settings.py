@@ -21,6 +21,7 @@ from backend.core.config import (
     settings,
 )
 from backend.modules.discord.bot import discord_bot
+from backend.modules.publishers.dispatcher import check_autopost_rate_limit
 
 os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 
@@ -50,6 +51,12 @@ class SettingsUpdateRequest(BaseModel):
     POST_TRIGGER_DELAY_SEC: Optional[int] = None
     CLIP_COOLDOWN_SEC: Optional[int] = None
     VISUAL_EVAL_INTERVAL_SEC: Optional[int] = None
+
+    AUTO_POST_ENABLED: Optional[bool] = None
+    AUTO_POST_THRESHOLD: Optional[float] = None
+    AUTO_POST_MIN_INTERVAL_MIN: Optional[int] = None
+    AUTO_POST_MAX_PER_HOUR: Optional[int] = None
+    AUTO_POST_MAX_PER_DAY: Optional[int] = None
 
     VLM_PROVIDER: Optional[str] = None
     VLM_API_URL: Optional[str] = None
@@ -134,6 +141,11 @@ def get_all_settings() -> Dict[str, Any]:
         "POST_TRIGGER_DELAY_SEC": settings.POST_TRIGGER_DELAY_SEC,
         "CLIP_COOLDOWN_SEC": settings.CLIP_COOLDOWN_SEC,
         "VISUAL_EVAL_INTERVAL_SEC": settings.VISUAL_EVAL_INTERVAL_SEC,
+        "AUTO_POST_ENABLED": settings.AUTO_POST_ENABLED,
+        "AUTO_POST_THRESHOLD": settings.AUTO_POST_THRESHOLD,
+        "AUTO_POST_MIN_INTERVAL_MIN": settings.AUTO_POST_MIN_INTERVAL_MIN,
+        "AUTO_POST_MAX_PER_HOUR": settings.AUTO_POST_MAX_PER_HOUR,
+        "AUTO_POST_MAX_PER_DAY": settings.AUTO_POST_MAX_PER_DAY,
         "VLM_PROVIDER": settings.VLM_PROVIDER,
         "VLM_API_URL": settings.VLM_API_URL,
         "VLM_API_KEY": settings.VLM_API_KEY,
@@ -177,6 +189,7 @@ def get_all_settings() -> Dict[str, Any]:
             "watermark_exists": get_watermark_path() is not None,
             "discord": discord_bot.get_status(),
             "autoposter_detected": os.path.isdir(r"D:\AutoPoster"),
+            "autopost_guard": check_autopost_rate_limit(),
         },
     }
 
