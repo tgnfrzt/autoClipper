@@ -178,6 +178,12 @@ def get_all_settings() -> Dict[str, Any]:
 @router.post("")
 async def update_settings(req: SettingsUpdateRequest) -> Dict[str, Any]:
     updates = {k: v for k, v in req.model_dump(exclude_unset=True).items() if v is not None}
+    # Auto-route if a user pastes a Discord Webhook URL into the Bot Token box
+    tok_val = str(updates.get("DISCORD_BOT_TOKEN", "")).strip()
+    if tok_val.startswith("https://") and "/api/webhooks/" in tok_val:
+        updates["DISCORD_WEBHOOK_URL"] = tok_val
+        updates["DISCORD_BOT_TOKEN"] = ""
+
     discord_changed = any(
         k in updates for k in ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_USER_ID")
     )
