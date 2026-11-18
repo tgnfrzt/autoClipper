@@ -38,6 +38,12 @@ class ClipStatusRequest(BaseModel):
     status: str = "accepted"
 
 
+class PostHistoryUpdateRequest(BaseModel):
+    post_url: Optional[str] = None
+    views: Optional[int] = None
+    likes: Optional[int] = None
+
+
 @router.get("")
 def get_clips(limit: int = 100) -> Dict[str, Any]:
     items = list_clips(limit=limit)
@@ -92,6 +98,25 @@ def update_clip_metadata(clip_id: str, req: ClipUpdateRequest) -> Dict[str, Any]
         if req.ai_caption is not None:
             conn.execute("UPDATE clips SET ai_caption = ? WHERE id = ?", (req.ai_caption, clip_id))
     conn.close()
+    return {"success": True}
+
+
+@router.patch("/posts/{post_id}")
+def update_post_history_record(post_id: str, req: PostHistoryUpdateRequest) -> Dict[str, Any]:
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id FROM post_history WHERE id = ?", (post_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Published post record not found")
+        with conn:
+            if req.post_url is not None:
+                conn.execute("UPDATE post_history SET post_url = ? WHERE id = ?", (req.post_url.strip(), post_id))
+            if req.views is not None:
+                conn.execute("UPDATE post_history SET views = ? WHERE id = ?", (max(0, int(req.views)), post_id))
+            if req.likes is not None:
+                conn.execute("UPDATE post_history SET likes = ? WHERE id = ?", (max(0, int(req.likes)), post_id))
+    finally:
+        conn.close()
     return {"success": True}
 
 

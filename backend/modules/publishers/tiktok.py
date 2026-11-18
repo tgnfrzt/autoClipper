@@ -9,6 +9,30 @@ import requests
 from backend.core.config import settings
 
 
+def resolve_tiktok_username(session_id: Optional[str] = None) -> str:
+    sess = (session_id or settings.TIKTOK_SESSION_ID or "").strip()
+    if not sess:
+        return ""
+    try:
+        s = requests.Session()
+        s.cookies.set("sessionid", sess, domain=".tiktok.com")
+        s.cookies.set("sessionid_ss", sess, domain=".tiktok.com")
+        s.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                )
+            }
+        )
+        r = s.get("https://www.tiktok.com/passport/web/account/info/", timeout=8)
+        if r.status_code == 200:
+            return str(r.json().get("data", {}).get("username") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def publish_tiktok_via_session(
     video_path: str,
     caption: str = "",
@@ -68,12 +92,14 @@ def publish_tiktok_via_session(
                         pass
 
             if res.returncode == 0 and parsed and parsed.get("success"):
+                uname = resolve_tiktok_username(sess)
+                profile_url = f"https://www.tiktok.com/@{uname}" if uname else "https://www.tiktok.com"
                 return {
                     "success": True,
                     "platform": "tiktok",
                     "method": "session_uploader",
                     "browser": browser,
-                    "post_url": "https://www.tiktok.com",
+                    "post_url": profile_url,
                 }
             err_msg = (parsed.get("error") if parsed else None) or res.stderr.strip() or f"Exit code {res.returncode}"
             last_err = RuntimeError(err_msg)

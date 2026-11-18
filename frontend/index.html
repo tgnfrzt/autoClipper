@@ -415,6 +415,71 @@
     .check-row input[type="checkbox"] { width: 18px; height: 18px; min-height: auto; }
 
     .watchlist-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .paid-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(460px, 1fr));
+      gap: 1rem;
+    }
+    .paid-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .paid-views-badge {
+      background: rgba(16, 185, 129, 0.14);
+      border: 1px solid rgba(16, 185, 129, 0.45);
+      color: #34d399;
+      padding: 0.28rem 0.65rem;
+      border-radius: 999px;
+      font-weight: 800;
+      font-size: 0.92rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .paid-link-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .paid-link-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.6rem;
+      background: var(--surface-2);
+      border: 1px solid #222e46;
+      border-radius: 8px;
+      padding: 0.5rem 0.65rem;
+      font-size: 0.82rem;
+    }
+    .paid-link-main {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      min-width: 0;
+      flex: 1;
+    }
+    .paid-link-main a {
+      color: #38bdf8;
+      text-decoration: none;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-weight: 600;
+    }
+    .paid-link-main a:hover { text-decoration: underline; }
+    .paid-link-meta {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
     .chip {
       display: inline-flex;
       align-items: center;
@@ -480,6 +545,7 @@
       <button type="button" role="tab" id="tab-radar" aria-selected="true" tabindex="0">📡 Live Stream Radar</button>
       <button type="button" role="tab" id="tab-clips" aria-selected="false" tabindex="-1">🎬 Pending Library (<span id="cntPending">0</span>)</button>
       <button type="button" role="tab" id="tab-accepted" aria-selected="false" tabindex="-1">✅ Accepted &amp; Posted (<span id="cntAccepted">0</span>)</button>
+      <button type="button" role="tab" id="tab-watchlist" aria-selected="false" tabindex="-1">💰 Watchlist &amp; Views (<span id="cntWatchlist">0</span>)</button>
       <button type="button" role="tab" id="tab-stats" aria-selected="false" tabindex="-1">📊 Statistics &amp; Monitor</button>
       <button type="button" role="tab" id="tab-config" aria-selected="false" tabindex="-1">⚙️ Configure</button>
     </div>
@@ -521,7 +587,7 @@
                 <option value="twitch">Twitch</option>
                 <option value="youtube">YouTube Live</option>
               </select>
-              <button type="submit" class="primary">➕ Watch Streamer</button>
+              <button type="submit" class="primary">➕ Add to Watchlist</button>
             </form>
             <div class="toolbar-group">
               <button type="button" id="btnDiscoverNow">🔍 Discover Live Streams</button>
@@ -570,7 +636,42 @@
       </div>
     </section>
 
-    <!-- TAB 3: STATISTICS & SYSTEM MONITOR -->
+    <!-- TAB 4: PAID WATCHLIST & VIEWS -->
+    <section id="panel-watchlist" role="tabpanel" aria-labelledby="tab-watchlist" hidden>
+      <div class="panel-body">
+        <div class="kpi-grid">
+          <div class="kpi"><div class="kpi-label">Watchlist Streamers</div><div class="kpi-val" id="paidKpiStreamers">0</div></div>
+          <div class="kpi"><div class="kpi-label">Clips / Posted Links</div><div class="kpi-val" id="paidKpiLinks">0 / 0</div></div>
+          <div class="kpi"><div class="kpi-label">Total Views Earned</div><div class="kpi-val" style="color:#34d399;" id="paidKpiViews">0</div></div>
+          <div class="kpi"><div class="kpi-label">By Platform (YT / IG / TT)</div><div class="kpi-val" style="font-size:1.05rem;" id="paidKpiBreakdown">0 / 0 / 0</div></div>
+        </div>
+
+        <div class="card">
+          <div class="toolbar">
+            <form id="addPaidWatchlistForm" class="toolbar-group" style="flex:1;">
+              <label for="paidWatchlistTarget" class="hint" style="font-weight:700;">Add Paid Streamer:</label>
+              <input id="paidWatchlistTarget" name="target" type="text" placeholder="Enter streamer name or Twitch / YouTube link (e.g. kaicenat, xQc, https://twitch.tv/...)" autocorrect="off" autocapitalize="none" spellcheck="false" style="min-width:300px;flex:1;max-width:520px;" required />
+              <select id="paidWatchlistPlatform" name="platform" aria-label="Platform">
+                <option value="auto">Auto-Detect</option>
+                <option value="twitch">Twitch</option>
+                <option value="youtube">YouTube Live</option>
+              </select>
+              <button type="submit" class="primary">➕ Add to Watchlist</button>
+            </form>
+            <div class="toolbar-group">
+              <button type="button" id="btnSyncViews" class="success">🔄 Refresh Views</button>
+            </div>
+          </div>
+          <p class="hint" style="margin:0.45rem 0 0;">Automatically matches every clip containing each streamer and syncs live view counts from YouTube Shorts, Instagram Reels, and TikTok.</p>
+        </div>
+
+        <div class="paid-grid" id="paidWatchlistGrid">
+          <div class="card"><p class="hint">Loading watchlist &amp; clip views...</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 5: STATISTICS & SYSTEM MONITOR -->
     <section id="panel-stats" role="tabpanel" aria-labelledby="tab-stats" hidden>
       <div class="panel-body">
         <div class="kpi-grid">
@@ -1338,6 +1439,134 @@
       });
     }
 
+    async function refreshPaidWatchlist(triggerSync = false) {
+      try {
+        const data = triggerSync
+          ? await api('/api/streams/paid-watchlist/sync-views', { method: 'POST' })
+          : await api('/api/streams/paid-watchlist');
+        const sum = data.summary || {};
+        const byP = sum.views_by_platform || {};
+        document.getElementById('cntWatchlist').textContent = sum.streamers_count || 0;
+        document.getElementById('paidKpiStreamers').textContent = sum.streamers_count || 0;
+        document.getElementById('paidKpiLinks').textContent = `${sum.clips_count || 0} / ${sum.posts_count || 0}`;
+        document.getElementById('paidKpiViews').textContent = Number(sum.total_views || 0).toLocaleString();
+        document.getElementById('paidKpiBreakdown').textContent =
+          `${Number(byP.youtube_shorts || 0).toLocaleString()} / ${Number(byP.instagram || 0).toLocaleString()} / ${Number(byP.tiktok || 0).toLocaleString()}`;
+
+        const grid = document.getElementById('paidWatchlistGrid');
+        const items = data.streamers || [];
+        if (!items.length) {
+          grid.innerHTML = `<div class="card"><p class="hint">No streamers in your watchlist yet. Type a streamer's name or link above and click <strong>Add to Watchlist</strong>.</p></div>`;
+          return;
+        }
+
+        grid.innerHTML = items.map((s) => {
+          const sb = s.views_by_platform || {};
+          const postRows = (s.posts || []).map((p) => {
+            const pIcon = p.platform.includes('youtube') ? '▶️ YT' : (p.platform.includes('instagram') ? '📸 IG' : '🎵 TT');
+            const pUrl = p.post_url || '';
+            return `
+              <div class="paid-link-item">
+                <div class="paid-link-main">
+                  <span><strong>${pIcon}</strong> • ${esc(p.clip_caption)}</span>
+                  ${pUrl ? `<a href="${esc(pUrl)}" target="_blank" rel="noreferrer">${esc(pUrl)}</a>` : `<span class="hint">No URL saved</span>`}
+                </div>
+                <div class="paid-link-meta">
+                  <span style="color:#34d399;font-weight:700;">👁️ ${Number(p.views || 0).toLocaleString()}</span>
+                  <span class="hint">❤️ ${Number(p.likes || 0).toLocaleString()}</span>
+                  <button type="button" class="sm" data-edit-post="${esc(p.id)}" data-cur-url="${esc(pUrl)}" data-cur-views="${Number(p.views || 0)}" title="Edit link or view count">✏️</button>
+                </div>
+              </div>
+            `;
+          }).join('');
+
+          const unposted = (s.clips || []).filter((c) => !(c.posts || []).length);
+          const clipRows = unposted.map((c) => `
+            <div class="paid-link-item" style="opacity:0.85;">
+              <div class="paid-link-main">
+                <span>🎬 <strong>${esc(c.status.toUpperCase())}</strong> • ${esc(c.overlay_caption || c.ai_title || c.id)}</span>
+                <a href="/api/clips/${esc(c.id)}/video" target="_blank">Preview Local Clip (${Number(c.duration_sec || 0).toFixed(0)}s) ↗</a>
+              </div>
+            </div>
+          `).join('');
+
+          const allUrls = (s.posts || []).map((p) => p.post_url).filter(Boolean);
+          return `
+            <article class="paid-card">
+              <div class="toolbar">
+                <div>
+                  <strong style="font-size:1.05rem;">${s.is_live ? '🟢' : '⚫'} ${esc(s.display_name)}</strong>
+                  <span class="hint" style="margin-left:0.35rem;">(${esc(s.platform.toUpperCase())})</span>
+                  ${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noreferrer" class="hint" style="margin-left:0.4rem;">Channel ↗</a>` : ''}
+                </div>
+                <span class="paid-views-badge">👁️ ${Number(s.total_views || 0).toLocaleString()} views</span>
+              </div>
+              <div class="toolbar" style="font-size:0.8rem;">
+                <span class="hint">
+                  Clips: <strong>${s.clips_count}</strong> • Posted Links: <strong>${s.posts_count}</strong> •
+                  YT: <strong>${Number(sb.youtube_shorts || 0).toLocaleString()}</strong> •
+                  IG: <strong>${Number(sb.instagram || 0).toLocaleString()}</strong> •
+                  TT: <strong>${Number(sb.tiktok || 0).toLocaleString()}</strong>
+                </span>
+                <div class="toolbar-group">
+                  ${allUrls.length ? `<button type="button" class="sm" data-copy-links="${esc(allUrls.join('\n'))}">📋 Copy Links</button>` : ''}
+                  <button type="button" class="sm danger" data-remove-paid="${esc(s.id)}">Remove</button>
+                </div>
+              </div>
+              <div class="paid-link-list">
+                ${postRows || clipRows ? (postRows + clipRows) : '<p class="hint" style="margin:0.25rem 0;">No clips captured for this streamer yet — monitoring live now.</p>'}
+              </div>
+            </article>
+          `;
+        }).join('');
+
+        grid.querySelectorAll('[data-copy-links]').forEach((b) => {
+          b.addEventListener('click', async () => {
+            try {
+              await navigator.clipboard.writeText(b.dataset.copyLinks);
+              showToast('Copied all clip links for streamer!');
+            } catch {
+              showToast('Clipboard permission blocked.');
+            }
+          });
+        });
+
+        grid.querySelectorAll('[data-edit-post]').forEach((b) => {
+          b.addEventListener('click', async () => {
+            const newUrl = prompt('Published video URL:', b.dataset.curUrl || '');
+            if (newUrl === null) return;
+            const newViewsStr = prompt('Views count (leave as-is or edit):', b.dataset.curViews || '0');
+            if (newViewsStr === null) return;
+            const viewsNum = parseInt(newViewsStr, 10);
+            await api(`/api/clips/posts/${encodeURIComponent(b.dataset.editPost)}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                post_url: newUrl.trim(),
+                views: Number.isFinite(viewsNum) ? Math.max(0, viewsNum) : undefined,
+              }),
+            });
+            showToast('Updated link & view count!');
+            refreshPaidWatchlist(false);
+          });
+        });
+
+        grid.querySelectorAll('[data-remove-paid]').forEach((b) => {
+          b.addEventListener('click', async () => {
+            await api(`/api/streams/watchlist/${encodeURIComponent(b.dataset.removePaid)}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ in_paid_watchlist: false }),
+            });
+            showToast('Removed streamer from Paid Watchlist.');
+            refreshPaidWatchlist(false);
+          });
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
     async function refreshClips() {
       const data = await api('/api/clips?limit=100');
       const pending = data.clips.filter((c) => c.status === 'pending');
@@ -1394,11 +1623,12 @@
         await api('/api/streams/watchlist', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ target, platform }),
+          body: JSON.stringify({ target, platform, in_paid_watchlist: true }),
         });
         document.getElementById('newStreamerTarget').value = '';
         showToast(`Added ${target} to watchlist!`);
         refreshRadarAndStats();
+        refreshPaidWatchlist(false);
       } catch (err) {
         showToast(err.message);
       }
@@ -1554,11 +1784,47 @@
       showToast(res.valid ? res.message : `Relay Error: ${res.error}`);
     });
 
+    document.getElementById('addPaidWatchlistForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const target = document.getElementById('paidWatchlistTarget').value.trim();
+      const platform = document.getElementById('paidWatchlistPlatform').value;
+      if (!target) return;
+      try {
+        await api('/api/streams/watchlist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target, platform, in_paid_watchlist: true }),
+        });
+        document.getElementById('paidWatchlistTarget').value = '';
+        showToast(`Added ${target} to Watchlist!`);
+        refreshPaidWatchlist(false);
+        refreshRadarAndStats();
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+
+    document.getElementById('btnSyncViews').addEventListener('click', async () => {
+      const btn = document.getElementById('btnSyncViews');
+      btn.disabled = true;
+      showToast('Syncing live views from YouTube, Instagram & TikTok...');
+      try {
+        await refreshPaidWatchlist(true);
+        showToast('Updated live view counts & permalinks!');
+      } catch (err) {
+        showToast(err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     loadSettings();
     refreshRadarAndStats();
     refreshClips();
+    refreshPaidWatchlist(false);
     setInterval(refreshRadarAndStats, 2500);
     setInterval(loadSettings, 15000);
+    setInterval(() => refreshPaidWatchlist(false), 30000);
   </script>
 </body>
 </html>

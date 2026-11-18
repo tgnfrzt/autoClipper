@@ -1,6 +1,8 @@
+import asyncio
 import os
+import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -8,6 +10,7 @@ from pydantic import BaseModel
 
 from backend.core.config import THUMBS_DIR, save_settings_to_env
 from backend.core.database import fetch_all_streamers, get_db, upsert_streamer
+from backend.modules.publishers.view_tracker import sync_all_clip_views
 from backend.modules.streams.discovery import check_twitch_channel_live, check_youtube_target_live
 from backend.modules.streams.manager import stream_manager
 from backend.api.ai_models import _get_hardware_telemetry
@@ -19,12 +22,14 @@ class AddStreamerRequest(BaseModel):
     target: str
     platform: str = "auto"  # auto | twitch | youtube
     display_name: Optional[str] = None
-    priority: int = 90
+    priority: int = 92
+    in_paid_watchlist: Optional[bool] = True
 
 
 class ToggleStreamerRequest(BaseModel):
     enabled: Optional[bool] = None
     priority: Optional[int] = None
+    in_paid_watchlist: Optional[bool] = None
 
 
 class EngineToggleRequest(BaseModel):
@@ -62,8 +67,18 @@ async def add_manual_streamer(req: AddStreamerRequest) -> Dict[str, Any]:
         else:
             plat = "twitch"
 
+    paid_flag = True if req.in_paid_watchlist is None else bool(req.in_paid_watchlist)
     if plat == "twitch":
-        login = raw.replace("https://www.twitch.tv/", "").replace("https://twitch.tv/", "").strip("/").split("/")[0].lower()
+        login = (
+            raw.replace("https://www.twitch.tv/", "")
+            .replace("https://twitch.tv/", "")
+            .replace("http://www.twitch.tv/", "")
+            .replace("http://twitch.tv/", "")
+            .strip("/")
+            .split("/")[0]
+            .split("?")[0]
+            .lower()
+        )
         live_info = await check_twitch_channel_live(login)
         if live_info:
             sid = upsert_streamer(
@@ -78,6 +93,7 @@ async def add_manual_streamer(req: AddStreamerRequest) -> Dict[str, Any]:
                 viewer_count=live_info["viewer_count"],
                 title=live_info["title"],
                 game_name=live_info["game_name"],
+                in_paid_watchlist=paid_flag,
             )
         else:
             sid = upsert_streamer(
@@ -88,6 +104,7 @@ async def add_manual_streamer(req: AddStreamerRequest) -> Dict[str, Any]:
                 is_manual=True,
                 enabled=True,
                 priority=req.priority,
+                in_paid_watchlist=paid_flag,
             )
     else:
         yt_info = await check_youtube_target_live(raw)
@@ -104,6 +121,7 @@ async def add_manual_streamer(req: AddStreamerRequest) -> Dict[str, Any]:
                 viewer_count=yt_info["viewer_count"],
                 title=yt_info["title"],
                 game_name=yt_info["game_name"],
+                in_paid_watchlist=paid_flag,
             )
         else:
             url = raw if raw.startswith("http") else f"https://www.youtube.com/{raw}/live"
@@ -116,6 +134,7 @@ async def add_manual_streamer(req: AddStreamerRequest) -> Dict[str, Any]:
                 is_manual=True,
                 enabled=True,
                 priority=req.priority,
+                in_paid_watchlist=paid_flag,
             )
 
     await stream_manager._sync_active_buffers()
@@ -130,9 +149,163 @@ async def update_streamer(stream_id: str, req: ToggleStreamerRequest) -> Dict[st
             conn.execute("UPDATE streamers SET enabled = ? WHERE id = ?", (1 if req.enabled else 0, stream_id))
         if req.priority is not None:
             conn.execute("UPDATE streamers SET priority = ? WHERE id = ?", (req.priority, stream_id))
+        if req.in_paid_watchlist is not None:
+            conn.execute("UPDATE streamers SET in_paid_watchlist = ? WHERE id = ?", (1 if req.in_paid_watchlist else 0, stream_id))
     conn.close()
     await stream_manager._sync_active_buffers()
     return {"success": True}
+
+
+def _clip_mentions_streamer(clip: Dict[str, Any], stream_id: str, names: List[str]) -> bool:
+    if clip.get("stream_id") == stream_id:
+        return True
+    sname = (clip.get("streamer_name") or "").strip().lower()
+    cap = (clip.get("overlay_caption") or "").lower()
+    title = (clip.get("ai_title") or "").lower()
+    for n in names:
+        nl = (n or "").strip().lower()
+        if not nl:
+            continue
+        if sname == nl:
+            return True
+        if len(nl) >= 3 and re.search(rf"(?<![a-z0-9_]){re.escape(nl)}(?![a-z0-9_])", f"{cap} {title}"):
+            return True
+    return False
+
+
+@router.get("/paid-watchlist")
+def get_paid_watchlist() -> Dict[str, Any]:
+    conn = get_db()
+    try:
+        paid_rows = [
+            dict(r)
+            for r in conn.execute(
+                """
+                SELECT * FROM streamers
+                WHERE in_paid_watchlist = 1
+                ORDER BY is_live DESC, priority DESC, viewer_count DESC
+                """
+            ).fetchall()
+        ]
+        all_clips = [
+            dict(r)
+            for r in conn.execute("SELECT * FROM clips ORDER BY created_at DESC").fetchall()
+        ]
+        all_posts = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM post_history WHERE status = 'posted' ORDER BY published_at DESC"
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    posts_by_clip: Dict[str, List[Dict[str, Any]]] = {}
+    for p in all_posts:
+        posts_by_clip.setdefault(p["clip_id"], []).append(p)
+
+    entries: List[Dict[str, Any]] = list(paid_rows)
+
+    summary_views = 0
+    summary_posts = 0
+    summary_by_plat = {"youtube_shorts": 0, "instagram": 0, "tiktok": 0}
+    seen_global_post_ids: set[str] = set()
+
+    enriched: List[Dict[str, Any]] = []
+    for s in entries:
+        sid = s["id"]
+        match_names = [s.get("display_name") or "", s.get("channel_id") or ""]
+        matched_clips = [c for c in all_clips if _clip_mentions_streamer(c, sid, match_names)]
+
+        streamer_posts: List[Dict[str, Any]] = []
+        seen_post_ids: set[str] = set()
+        total_views = 0
+        total_likes = 0
+        by_plat = {"youtube_shorts": 0, "instagram": 0, "tiktok": 0}
+
+        clip_cards = []
+        for c in matched_clips:
+            c_posts = posts_by_clip.get(c["id"], [])
+            clip_cards.append(
+                {
+                    "id": c["id"],
+                    "overlay_caption": c.get("overlay_caption") or "",
+                    "ai_title": c.get("ai_title") or "",
+                    "status": c.get("status") or "pending",
+                    "duration_sec": c.get("duration_sec") or 0,
+                    "created_at": c.get("created_at") or "",
+                    "posts": c_posts,
+                }
+            )
+            for p in c_posts:
+                pid = p["id"]
+                if pid in seen_post_ids:
+                    continue
+                seen_post_ids.add(pid)
+                v = int(p.get("views") or 0)
+                lk = int(p.get("likes") or 0)
+                plat_key = "youtube_shorts" if "youtube" in (p.get("platform") or "") else (
+                    "instagram" if "instagram" in (p.get("platform") or "") else "tiktok"
+                )
+                total_views += v
+                total_likes += lk
+                by_plat[plat_key] = by_plat.get(plat_key, 0) + v
+                if pid not in seen_global_post_ids:
+                    seen_global_post_ids.add(pid)
+                    summary_views += v
+                    summary_posts += 1
+                    summary_by_plat[plat_key] = summary_by_plat.get(plat_key, 0) + v
+
+                streamer_posts.append(
+                    {
+                        **p,
+                        "clip_caption": c.get("overlay_caption") or c.get("ai_title") or c.get("streamer_name"),
+                    }
+                )
+
+        streamer_posts.sort(key=lambda x: x.get("published_at") or "", reverse=True)
+        enriched.append(
+            {
+                "id": sid,
+                "display_name": s.get("display_name") or s.get("channel_id") or sid,
+                "platform": s.get("platform") or "twitch",
+                "channel_id": s.get("channel_id") or "",
+                "url": s.get("url") or "",
+                "is_live": bool(s.get("is_live")),
+                "enabled": bool(s.get("enabled", 1)),
+                "in_paid_watchlist": bool(s.get("in_paid_watchlist", 1)),
+                "clips_count": len(matched_clips),
+                "posts_count": len(streamer_posts),
+                "total_views": total_views,
+                "total_likes": total_likes,
+                "views_by_platform": by_plat,
+                "posts": streamer_posts,
+                "clips": clip_cards,
+            }
+        )
+
+    enriched.sort(
+        key=lambda x: (x["total_views"], x["posts_count"], x["clips_count"], 1 if x["is_live"] else 0),
+        reverse=True,
+    )
+
+    return {
+        "summary": {
+            "streamers_count": len(enriched),
+            "clips_count": sum(e["clips_count"] for e in enriched),
+            "posts_count": summary_posts,
+            "total_views": summary_views,
+            "views_by_platform": summary_by_plat,
+        },
+        "streamers": enriched,
+    }
+
+
+@router.post("/paid-watchlist/sync-views")
+async def sync_paid_watchlist_views() -> Dict[str, Any]:
+    sync_res = await asyncio.to_thread(sync_all_clip_views)
+    data = get_paid_watchlist()
+    return {"success": True, "sync": sync_res, **data}
 
 
 @router.delete("/watchlist/{stream_id}")

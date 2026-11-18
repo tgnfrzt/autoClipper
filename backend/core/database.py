@@ -93,16 +93,38 @@ def init_db() -> None:
         migrations = [
             "ALTER TABLE streamers ADD COLUMN has_facecam INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE streamers ADD COLUMN facecam_corner TEXT DEFAULT ''",
+            "ALTER TABLE streamers ADD COLUMN in_paid_watchlist INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE streamers ADD COLUMN rpm_rate REAL NOT NULL DEFAULT 0.0",
             "ALTER TABLE clips ADD COLUMN facecam_score REAL DEFAULT 0.0",
             "ALTER TABLE clips ADD COLUMN facecam_corner TEXT DEFAULT ''",
             "ALTER TABLE clips ADD COLUMN transcript TEXT DEFAULT ''",
             "ALTER TABLE clips ADD COLUMN overlay_caption TEXT DEFAULT ''",
+            "ALTER TABLE post_history ADD COLUMN views INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE post_history ADD COLUMN likes INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE post_history ADD COLUMN comments INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE post_history ADD COLUMN external_post_id TEXT DEFAULT ''",
+            "ALTER TABLE post_history ADD COLUMN last_synced_at TEXT DEFAULT ''",
         ]
         for sql in migrations:
             try:
                 conn.execute(sql)
             except Exception:
                 pass
+
+        # Seed paid watchlist initially from manual streamers and already-clipped streamers
+        try:
+            paid_cnt = conn.execute("SELECT COUNT(*) FROM streamers WHERE in_paid_watchlist = 1").fetchone()[0]
+            if paid_cnt == 0:
+                conn.execute(
+                    """
+                    UPDATE streamers SET in_paid_watchlist = 1
+                    WHERE is_manual = 1
+                       OR id IN (SELECT DISTINCT stream_id FROM clips)
+                       OR LOWER(display_name) IN (SELECT LOWER(streamer_name) FROM clips)
+                    """
+                )
+        except Exception:
+            pass
 
         cur = conn.execute("SELECT COUNT(*) FROM streamers")
         if cur.fetchone()[0] == 0:
@@ -165,29 +187,35 @@ def upsert_streamer(
     viewer_count: int = 0,
     title: str = "",
     game_name: str = "",
+    in_paid_watchlist: Optional[bool] = None,
 ) -> str:
     sid = f"{platform.lower()}:{channel_id.lower()}"
     now = datetime.utcnow().isoformat()
     conn = get_db()
     with conn:
-        existing = conn.execute("SELECT id, is_manual, enabled FROM streamers WHERE id = ?", (sid,)).fetchone()
+        existing = conn.execute("SELECT id, is_manual, enabled, in_paid_watchlist FROM streamers WHERE id = ?", (sid,)).fetchone()
         if existing:
+            next_paid = existing["in_paid_watchlist"] if in_paid_watchlist is None else (1 if in_paid_watchlist else 0)
+            next_manual = 1 if is_manual else existing["is_manual"]
+            next_enabled = 1 if in_paid_watchlist else existing["enabled"]
             conn.execute(
                 """
                 UPDATE streamers
                 SET display_name = ?, url = ?, is_live = ?, viewer_count = ?,
-                    title = ?, game_name = ?, last_checked_at = ?
+                    title = ?, game_name = ?, last_checked_at = ?,
+                    is_manual = ?, enabled = ?, in_paid_watchlist = ?
                 WHERE id = ?
                 """,
-                (display_name, url, 1 if is_live else 0, viewer_count, title, game_name, now, sid),
+                (display_name, url, 1 if is_live else 0, viewer_count, title, game_name, now, next_manual, next_enabled, next_paid, sid),
             )
         else:
+            paid_flag = 1 if (in_paid_watchlist is True or (in_paid_watchlist is None and is_manual)) else 0
             conn.execute(
                 """
                 INSERT INTO streamers
                 (id, platform, channel_id, display_name, url, is_manual, enabled, priority,
-                 is_live, viewer_count, title, game_name, last_checked_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_live, viewer_count, title, game_name, in_paid_watchlist, last_checked_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     sid,
@@ -202,6 +230,7 @@ def upsert_streamer(
                     viewer_count,
                     title,
                     game_name,
+                    paid_flag,
                     now,
                     now,
                 ),

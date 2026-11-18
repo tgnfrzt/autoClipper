@@ -103,12 +103,13 @@ def publish_clip_to_platforms(clip_id: str, platforms: List[str]) -> Dict[str, A
             results.append(receipt)
             continue
 
+        ext_id = str(receipt.get("post_id") or receipt.get("video_id") or receipt.get("publish_id") or "")
         conn = get_db()
         with conn:
             conn.execute(
                 """
-                INSERT INTO post_history (id, clip_id, platform, status, post_url, error_message, published_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO post_history (id, clip_id, platform, status, post_url, error_message, external_post_id, published_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid.uuid4()),
@@ -117,6 +118,7 @@ def publish_clip_to_platforms(clip_id: str, platforms: List[str]) -> Dict[str, A
                     "posted" if ok else "failed",
                     receipt.get("post_url", ""),
                     receipt.get("error", ""),
+                    ext_id,
                     datetime.utcnow().isoformat(),
                 ),
             )

@@ -55,9 +55,16 @@ def patch_tiktok_uploader():
                 desc_locator = page.locator(f"xpath={config.selectors.upload.description}")
                 desc_locator.wait_for(state="visible", timeout=15000)
                 desc_locator.click()
-                desc_locator.press("Control+A")
-                desc_locator.press("Backspace")
-                time.sleep(0.5)
+                page.keyboard.press("Control+a")
+                page.keyboard.press("Backspace")
+                time.sleep(0.3)
+                # Ensure Draft.js/contenteditable clears any pre-filled filename completely
+                try:
+                    desc_locator.fill("")
+                except Exception:
+                    page.keyboard.press("Control+a")
+                    page.keyboard.press("Delete")
+                time.sleep(0.3)
 
                 words = [w for w in description.split() if w]
                 for word in words:

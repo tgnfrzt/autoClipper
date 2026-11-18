@@ -138,12 +138,23 @@ def publish_instagram_graph_api(
             raise RuntimeError(f"Instagram publish failed: {pub_data.get('error', {}).get('message', pub_res.text)}")
 
         post_id = pub_data["id"]
+        real_permalink = f"https://www.instagram.com/reel/{post_id}/"
+        try:
+            perm_res = requests.get(
+                f"{settings.GRAPH_API_URL}/{post_id}",
+                params={"fields": "permalink", "access_token": token},
+                timeout=10,
+            )
+            if perm_res.status_code == 200:
+                real_permalink = perm_res.json().get("permalink") or real_permalink
+        except Exception:
+            pass
         return {
             "success": True,
             "platform": "instagram",
             "method": "graph_api",
             "post_id": post_id,
-            "post_url": f"https://www.instagram.com/reel/{post_id}/",
+            "post_url": real_permalink,
         }
     finally:
         delete_from_temp_hosting(public_url, host)
