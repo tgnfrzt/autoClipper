@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from backend.core.config import THUMBS_DIR, save_settings_to_env
+from backend.core.config import THUMBS_DIR, save_settings_to_env, settings
 from backend.core.database import fetch_all_streamers, get_db, upsert_streamer
 from backend.modules.publishers.view_tracker import sync_all_clip_views
 from backend.modules.streams.discovery import check_twitch_channel_live, check_youtube_target_live
@@ -50,7 +50,21 @@ def get_system_telemetry() -> Dict[str, Any]:
 
 @router.get("/watchlist")
 def get_watchlist() -> Dict[str, Any]:
-    return {"streamers": fetch_all_streamers(enabled_only=False)}
+    rows = fetch_all_streamers(
+        enabled_only=False,
+        prefer_facecam=settings.PREFER_FACECAM_STREAMS,
+        prefer_english=settings.PREFER_ENGLISH_STREAMS,
+    )
+    active_ids = set(stream_manager._buffers.keys())
+    for idx, r in enumerate(rows):
+        r["is_buffering"] = r["id"] in active_ids
+        r["rank"] = idx + 1
+    return {
+        "streamers": rows,
+        "active_count": len(active_ids),
+        "max_concurrent_streams": settings.MAX_CONCURRENT_STREAMS,
+        "prefer_english": settings.PREFER_ENGLISH_STREAMS,
+    }
 
 
 @router.post("/watchlist")
@@ -94,6 +108,7 @@ async def add_manual_streamer(req: AddStreamerRequest) -> Dict[str, Any]:
                 title=live_info["title"],
                 game_name=live_info["game_name"],
                 in_paid_watchlist=paid_flag,
+                language=live_info.get("language", "en"),
             )
         else:
             sid = upsert_streamer(
@@ -122,6 +137,7 @@ async def add_manual_streamer(req: AddStreamerRequest) -> Dict[str, Any]:
                 title=yt_info["title"],
                 game_name=yt_info["game_name"],
                 in_paid_watchlist=paid_flag,
+                language=yt_info.get("language", "en"),
             )
         else:
             url = raw if raw.startswith("http") else f"https://www.youtube.com/{raw}/live"

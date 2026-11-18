@@ -95,6 +95,7 @@ def init_db() -> None:
             "ALTER TABLE streamers ADD COLUMN facecam_corner TEXT DEFAULT ''",
             "ALTER TABLE streamers ADD COLUMN in_paid_watchlist INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE streamers ADD COLUMN rpm_rate REAL NOT NULL DEFAULT 0.0",
+            "ALTER TABLE streamers ADD COLUMN language TEXT DEFAULT 'en'",
             "ALTER TABLE clips ADD COLUMN facecam_score REAL DEFAULT 0.0",
             "ALTER TABLE clips ADD COLUMN facecam_corner TEXT DEFAULT ''",
             "ALTER TABLE clips ADD COLUMN transcript TEXT DEFAULT ''",
@@ -148,19 +149,58 @@ def dict_from_row(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
     return {k: row[k] for k in row.keys()}
 
 
-def fetch_all_streamers(enabled_only: bool = False, prefer_facecam: Optional[bool] = None) -> List[Dict[str, Any]]:
+CORE_POPULAR_HANDLES = {
+    "kaicenat", "xqc", "ishowspeed", "@ishowspeed", "caseoh_", "jynxzi",
+    "lirik", "stableronaldo", "lacy", "clix", "yourrage", "yourragegaming",
+    "shroud", "summit1g", "zackrawrr", "theburntpeanut", "rubius",
+}
+
+
+def compute_stream_rank_score(
+    row: Dict[str, Any],
+    prefer_facecam: Optional[bool] = None,
+    prefer_english: Optional[bool] = None,
+) -> float:
+    use_fc = settings.PREFER_FACECAM_STREAMS if prefer_facecam is None else prefer_facecam
+    prefer_en = settings.PREFER_ENGLISH_STREAMS if prefer_english is None else prefer_english
+    lang = (row.get("language") or "en").strip().lower()
+    is_en = lang == "en" or lang.startswith("en-")
+    cid_low = (row.get("channel_id") or "").strip().lower()
+    name_low = (row.get("display_name") or "").strip().lower()
+    is_pinned = bool(
+        row.get("in_paid_watchlist")
+        or row.get("is_manual")
+        or cid_low in CORE_POPULAR_HANDLES
+        or name_low in CORE_POPULAR_HANDLES
+    )
+    base_v = max(int(row.get("viewer_count") or 0), 8000 if is_pinned else 0)
+    lang_mult = 2.6 if (prefer_en and is_en) else 1.0
+    fc_mult = 1.25 if (use_fc and row.get("has_facecam")) else 1.0
+    prio_mult = 1.0 + max(0, int(row.get("priority") or 50)) / 150.0
+    return base_v * lang_mult * fc_mult * prio_mult
+
+
+def fetch_all_streamers(
+    enabled_only: bool = False,
+    prefer_facecam: Optional[bool] = None,
+    prefer_english: Optional[bool] = None,
+) -> List[Dict[str, Any]]:
     conn = get_db()
     try:
         q = "SELECT * FROM streamers"
         if enabled_only:
             q += " WHERE enabled = 1"
-        use_fc = settings.PREFER_FACECAM_STREAMS if prefer_facecam is None else prefer_facecam
-        if use_fc:
-            q += " ORDER BY is_live DESC, has_facecam DESC, is_manual DESC, priority DESC, viewer_count DESC"
-        else:
-            q += " ORDER BY is_live DESC, is_manual DESC, priority DESC, viewer_count DESC"
-        rows = conn.execute(q).fetchall()
-        return [dict(r) for r in rows]
+        rows = [dict(r) for r in conn.execute(q).fetchall()]
+        rows.sort(
+            key=lambda r: (
+                1 if r.get("is_live") == 1 else 0,
+                1 if r.get("in_paid_watchlist") == 1 else 0,
+                compute_stream_rank_score(r, prefer_facecam=prefer_facecam, prefer_english=prefer_english),
+                int(r.get("viewer_count") or 0),
+            ),
+            reverse=True,
+        )
+        return rows
     finally:
         conn.close()
 
@@ -188,25 +228,45 @@ def upsert_streamer(
     title: str = "",
     game_name: str = "",
     in_paid_watchlist: Optional[bool] = None,
+    language: str = "en",
 ) -> str:
     sid = f"{platform.lower()}:{channel_id.lower()}"
     now = datetime.utcnow().isoformat()
+    lang_clean = (language or "en").strip().lower()
     conn = get_db()
     with conn:
-        existing = conn.execute("SELECT id, is_manual, enabled, in_paid_watchlist FROM streamers WHERE id = ?", (sid,)).fetchone()
+        existing = conn.execute(
+            "SELECT id, is_manual, enabled, priority, in_paid_watchlist FROM streamers WHERE id = ?",
+            (sid,),
+        ).fetchone()
         if existing:
             next_paid = existing["in_paid_watchlist"] if in_paid_watchlist is None else (1 if in_paid_watchlist else 0)
             next_manual = 1 if is_manual else existing["is_manual"]
             next_enabled = 1 if in_paid_watchlist else existing["enabled"]
+            next_prio = max(int(existing["priority"] or 50), int(priority)) if is_manual else int(existing["priority"] or priority)
             conn.execute(
                 """
                 UPDATE streamers
                 SET display_name = ?, url = ?, is_live = ?, viewer_count = ?,
-                    title = ?, game_name = ?, last_checked_at = ?,
+                    title = ?, game_name = ?, language = ?, priority = ?, last_checked_at = ?,
                     is_manual = ?, enabled = ?, in_paid_watchlist = ?
                 WHERE id = ?
                 """,
-                (display_name, url, 1 if is_live else 0, viewer_count, title, game_name, now, next_manual, next_enabled, next_paid, sid),
+                (
+                    display_name,
+                    url,
+                    1 if is_live else 0,
+                    viewer_count,
+                    title,
+                    game_name,
+                    lang_clean,
+                    next_prio,
+                    now,
+                    next_manual,
+                    next_enabled,
+                    next_paid,
+                    sid,
+                ),
             )
         else:
             paid_flag = 1 if (in_paid_watchlist is True or (in_paid_watchlist is None and is_manual)) else 0
@@ -214,8 +274,8 @@ def upsert_streamer(
                 """
                 INSERT INTO streamers
                 (id, platform, channel_id, display_name, url, is_manual, enabled, priority,
-                 is_live, viewer_count, title, game_name, in_paid_watchlist, last_checked_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_live, viewer_count, title, game_name, language, in_paid_watchlist, last_checked_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     sid,
@@ -230,6 +290,7 @@ def upsert_streamer(
                     viewer_count,
                     title,
                     game_name,
+                    lang_clean,
                     paid_flag,
                     now,
                     now,

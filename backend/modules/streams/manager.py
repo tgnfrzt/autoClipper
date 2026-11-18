@@ -93,43 +93,49 @@ class StreamManagerService:
         self.log_event("SYSTEM", "AutoClipper engine stopped.")
 
     async def refresh_discovery_now(self) -> Dict[str, Any]:
-        """Discovers live streams for the target game and checks enabled manual/popular streamers."""
+        """Discovers live streams for the target game and checks enabled manual/watchlist/popular streamers."""
         discovered: List[Dict[str, Any]] = []
-        manual_streamers = fetch_all_streamers(enabled_only=True)
-
-        twitch_checks = [
-            check_twitch_channel_live(s["channel_id"])
-            for s in manual_streamers
-            if s["platform"] == "twitch"
-        ]
-        yt_checks = [
-            check_youtube_target_live(s["url"])
-            for s in manual_streamers
-            if s["platform"] == "youtube"
+        manual_streamers = [
+            s
+            for s in fetch_all_streamers(enabled_only=True)
+            if s.get("is_manual") or s.get("in_paid_watchlist") or int(s.get("priority") or 0) >= 75
         ]
 
-        checked_results = await asyncio.gather(*twitch_checks, *yt_checks, return_exceptions=True)
-        for res in checked_results:
+        async def _check_one(s: Dict[str, Any]):
+            if s["platform"] == "twitch":
+                res = await check_twitch_channel_live(s["channel_id"])
+            else:
+                res = await check_youtube_target_live(s["url"])
+            return s, res
+
+        checked_results = await asyncio.gather(*[_check_one(s) for s in manual_streamers], return_exceptions=True)
+        for pair in checked_results:
+            if not isinstance(pair, tuple):
+                continue
+            src, res = pair
             if isinstance(res, dict):
                 upsert_streamer(
                     platform=res["platform"],
                     channel_id=res["channel_id"],
                     display_name=res["display_name"],
                     url=res["url"],
-                    is_manual=True,
+                    is_manual=bool(src.get("is_manual")),
                     enabled=True,
+                    priority=int(src.get("priority") or 65),
                     is_live=res["is_live"],
-                    viewer_count=res["viewer_count"],
+                    viewer_count=res["viewer_count"] or int(src.get("viewer_count") or 0),
                     title=res["title"],
                     game_name=res["game_name"],
+                    in_paid_watchlist=bool(src.get("in_paid_watchlist")) if src.get("in_paid_watchlist") else None,
+                    language=res.get("language", src.get("language", "en")),
                 )
                 if res["is_live"]:
                     discovered.append(res)
 
         if settings.AUTO_DISCOVER_TWITCH:
-            tw_streams = await discover_twitch_game_streams(settings.GAME_QUERY, limit=25)
+            tw_streams = await discover_twitch_game_streams(settings.GAME_QUERY, limit=45)
             if not tw_streams and settings.FALLBACK_GAME_QUERY:
-                tw_streams = await discover_twitch_game_streams(settings.FALLBACK_GAME_QUERY, limit=20)
+                tw_streams = await discover_twitch_game_streams(settings.FALLBACK_GAME_QUERY, limit=45)
             for s in tw_streams:
                 upsert_streamer(
                     platform="twitch",
@@ -143,13 +149,14 @@ class StreamManagerService:
                     viewer_count=s["viewer_count"],
                     title=s["title"],
                     game_name=s["game_name"],
+                    language=s.get("language", "en"),
                 )
                 discovered.append(s)
 
         if settings.AUTO_DISCOVER_YOUTUBE:
-            yt_streams = await discover_youtube_live_streams(f"{settings.GAME_QUERY} live", limit=10)
+            yt_streams = await discover_youtube_live_streams(f"{settings.GAME_QUERY} live", limit=15)
             if not yt_streams and settings.FALLBACK_GAME_QUERY:
-                yt_streams = await discover_youtube_live_streams(f"{settings.FALLBACK_GAME_QUERY} live", limit=8)
+                yt_streams = await discover_youtube_live_streams(f"{settings.FALLBACK_GAME_QUERY} live", limit=12)
             for s in yt_streams:
                 upsert_streamer(
                     platform="youtube",
@@ -163,6 +170,7 @@ class StreamManagerService:
                     viewer_count=s["viewer_count"],
                     title=s["title"],
                     game_name=s["game_name"],
+                    language=s.get("language", "en"),
                 )
                 discovered.append(s)
 
@@ -175,7 +183,11 @@ class StreamManagerService:
         return {"live_discovered": len(discovered), "active_buffers": len(self._buffers)}
 
     async def _sync_active_buffers(self) -> None:
-        all_rows = fetch_all_streamers(enabled_only=True, prefer_facecam=settings.PREFER_FACECAM_STREAMS)
+        all_rows = fetch_all_streamers(
+            enabled_only=True,
+            prefer_facecam=settings.PREFER_FACECAM_STREAMS,
+            prefer_english=settings.PREFER_ENGLISH_STREAMS,
+        )
         live_rows = [r for r in all_rows if r["is_live"] == 1]
         target_rows = live_rows[: max(1, int(settings.MAX_CONCURRENT_STREAMS))]
         target_ids = {r["id"] for r in target_rows}
@@ -201,6 +213,7 @@ class StreamManagerService:
                     "display_name": row["display_name"],
                     "url": row["url"],
                     "viewer_count": row["viewer_count"],
+                    "language": (row.get("language") or "en").upper(),
                     "title": row["title"],
                     "game_name": row["game_name"],
                     "has_facecam": bool(row.get("has_facecam")),
@@ -547,13 +560,21 @@ class StreamManagerService:
     def get_dashboard_snapshot(self) -> Dict[str, Any]:
         active = list(self._live_state.values())
         active.sort(
-            key=lambda x: (x["has_facecam"] if settings.PREFER_FACECAM_STREAMS else False, x["combined_score"], x["viewer_count"]),
+            key=lambda x: (
+                x["combined_score"] >= 45,
+                1 if (settings.PREFER_ENGLISH_STREAMS and str(x.get("language", "EN")).upper() == "EN") else 0,
+                x["has_facecam"] if settings.PREFER_FACECAM_STREAMS else False,
+                x["combined_score"],
+                x["viewer_count"],
+            ),
             reverse=True,
         )
         total_mps = round(sum(s["chat_mps"] for s in active), 2)
         return {
             "engine_enabled": settings.ENGINE_ENABLED,
             "prefer_facecam": settings.PREFER_FACECAM_STREAMS,
+            "prefer_english": settings.PREFER_ENGLISH_STREAMS,
+            "max_concurrent_streams": settings.MAX_CONCURRENT_STREAMS,
             "active_count": len(active),
             "facecam_count": sum(1 for s in active if s["has_facecam"]),
             "total_chat_mps": total_mps,

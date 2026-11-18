@@ -36,6 +36,7 @@ class SettingsUpdateRequest(BaseModel):
     AUTO_DISCOVER_TWITCH: Optional[bool] = None
     AUTO_DISCOVER_YOUTUBE: Optional[bool] = None
     PREFER_FACECAM_STREAMS: Optional[bool] = None
+    PREFER_ENGLISH_STREAMS: Optional[bool] = None
     MAX_CONCURRENT_STREAMS: Optional[int] = None
     STREAM_QUALITY: Optional[str] = None
     DISCOVERY_INTERVAL_SEC: Optional[int] = None
@@ -120,6 +121,7 @@ def get_all_settings() -> Dict[str, Any]:
         "AUTO_DISCOVER_TWITCH": settings.AUTO_DISCOVER_TWITCH,
         "AUTO_DISCOVER_YOUTUBE": settings.AUTO_DISCOVER_YOUTUBE,
         "PREFER_FACECAM_STREAMS": settings.PREFER_FACECAM_STREAMS,
+        "PREFER_ENGLISH_STREAMS": settings.PREFER_ENGLISH_STREAMS,
         "MAX_CONCURRENT_STREAMS": settings.MAX_CONCURRENT_STREAMS,
         "STREAM_QUALITY": settings.STREAM_QUALITY,
         "DISCOVERY_INTERVAL_SEC": settings.DISCOVERY_INTERVAL_SEC,
@@ -191,10 +193,16 @@ async def update_settings(req: SettingsUpdateRequest) -> Dict[str, Any]:
     discord_changed = any(
         k in updates for k in ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_USER_ID")
     )
+    stream_sync_needed = any(
+        k in updates for k in ("ENGINE_ENABLED", "MAX_CONCURRENT_STREAMS", "PREFER_FACECAM_STREAMS", "PREFER_ENGLISH_STREAMS")
+    )
     if updates:
         save_settings_to_env(updates)
     if discord_changed:
         await discord_bot.start_or_restart()
+    if stream_sync_needed:
+        from backend.modules.streams.manager import stream_manager
+        await stream_manager._sync_active_buffers()
     return {"success": True, "updated_fields": list(updates.keys())}
 
 

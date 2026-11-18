@@ -14,6 +14,24 @@ TWITCH_PUBLIC_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
+def _infer_title_language(title: str) -> str:
+    t = (title or "").strip()
+    if not t:
+        return "en"
+    if re.search(r"[\u0400-\u04FF\u0600-\u06FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]", t):
+        return "other"
+    tl = t.lower()
+    for tag, code in (
+        ("[es]", "es"), ("(es)", "es"), ("[esp]", "es"), ("espanol", "es"),
+        ("[de]", "de"), ("(de)", "de"), ("[ger]", "de"), ("deutsch", "de"),
+        ("[fr]", "fr"), ("(fr)", "fr"), ("[ita]", "it"), ("[it]", "it"),
+        ("[pt]", "pt"), ("(pt)", "pt"), ("[br]", "pt"), ("[ru]", "ru"),
+    ):
+        if tag in tl:
+            return code
+    return "en"
+
+
 async def check_twitch_channel_live(login: str) -> Optional[Dict[str, Any]]:
     """Checks if a single Twitch channel is currently live using Twitch public GQL."""
     clean_login = login.strip().lower().lstrip("@")
@@ -23,6 +41,9 @@ async def check_twitch_channel_live(login: str) -> Optional[Dict[str, Any]]:
         id
         login
         displayName
+        broadcastSettings {
+          language
+        }
         stream {
           id
           title
@@ -51,6 +72,7 @@ async def check_twitch_channel_live(login: str) -> Optional[Dict[str, Any]]:
             if not user:
                 return None
             stream = user.get("stream")
+            lang = str(((user.get("broadcastSettings") or {}).get("language")) or "en").lower()
             return {
                 "platform": "twitch",
                 "channel_id": user.get("login", clean_login),
@@ -60,12 +82,13 @@ async def check_twitch_channel_live(login: str) -> Optional[Dict[str, Any]]:
                 "viewer_count": int(stream.get("viewersCount", 0)) if stream else 0,
                 "title": str(stream.get("title", "")) if stream else "",
                 "game_name": str(((stream.get("game") or {}).get("name")) or "") if stream else "",
+                "language": lang,
             }
     except Exception:
         return None
 
 
-async def discover_twitch_game_streams(game_name: str, limit: int = 20) -> List[Dict[str, Any]]:
+async def discover_twitch_game_streams(game_name: str, limit: int = 45) -> List[Dict[str, Any]]:
     """
     Fetches top live Twitch streams for a game/category (e.g. 'Grand Theft Auto VI')
     ordered by viewer count via Twitch public GQL (no API key needed) or Helix API if configured.
@@ -88,6 +111,9 @@ async def discover_twitch_game_streams(game_name: str, limit: int = 20) -> List[
               broadcaster {
                 login
                 displayName
+                broadcastSettings {
+                  language
+                }
               }
               game {
                 name
@@ -122,6 +148,7 @@ async def discover_twitch_game_streams(game_name: str, limit: int = 20) -> List[
                 login = str(b.get("login", "")).strip()
                 if not login:
                     continue
+                lang = str(((b.get("broadcastSettings") or {}).get("language")) or "en").lower()
                 results.append(
                     {
                         "platform": "twitch",
@@ -132,6 +159,7 @@ async def discover_twitch_game_streams(game_name: str, limit: int = 20) -> List[
                         "viewer_count": int(node.get("viewersCount") or 0),
                         "title": str(node.get("title") or ""),
                         "game_name": str(((node.get("game") or {}).get("name")) or game_name),
+                        "language": lang,
                     }
                 )
     except Exception as exc:
@@ -139,7 +167,7 @@ async def discover_twitch_game_streams(game_name: str, limit: int = 20) -> List[
     return results
 
 
-async def _discover_twitch_helix(game_name: str, limit: int = 20) -> List[Dict[str, Any]]:
+async def _discover_twitch_helix(game_name: str, limit: int = 45) -> List[Dict[str, Any]]:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             tok_res = await client.post(
@@ -175,6 +203,7 @@ async def _discover_twitch_helix(game_name: str, limit: int = 20) -> List[Dict[s
                     "viewer_count": int(s.get("viewer_count", 0)),
                     "title": s.get("title", ""),
                     "game_name": s.get("game_name", game_name),
+                    "language": str(s.get("language") or "en").lower(),
                 }
                 for s in streams
             ]
@@ -220,6 +249,7 @@ def _ytdlp_search_live_sync(search_query: str, limit: int = 12) -> List[Dict[str
             if live_status == "is_upcoming":
                 continue
             channel = str(entry.get("channel") or entry.get("uploader") or "YouTube Live")
+            title_txt = str(entry.get("title") or "")
             results.append(
                 {
                     "platform": "youtube",
@@ -228,8 +258,9 @@ def _ytdlp_search_live_sync(search_query: str, limit: int = 12) -> List[Dict[str
                     "url": f"https://www.youtube.com/watch?v={vid}",
                     "is_live": True,
                     "viewer_count": int(entry.get("concurrent_view_count") or entry.get("view_count") or 0),
-                    "title": str(entry.get("title") or ""),
+                    "title": title_txt,
                     "game_name": search_query,
+                    "language": _infer_title_language(f"{channel} {title_txt}"),
                 }
             )
         return results
@@ -269,15 +300,18 @@ async def check_youtube_target_live(url_or_channel: str) -> Optional[Dict[str, A
                 return None
             title = (title_match.group(1).replace(" - YouTube", "").strip() if title_match else "")
             author = author_match.group(1) if author_match else target
+            view_match = re.search(r'"concurrentViewers":"(\d+)"', html) or re.search(r'"originalViewCount":"(\d+)"', html)
+            view_cnt = int(view_match.group(1)) if view_match else 0
             return {
                 "platform": "youtube",
                 "channel_id": vid,
                 "display_name": author,
                 "url": f"https://www.youtube.com/watch?v={vid}",
                 "is_live": is_live,
-                "viewer_count": 0,
+                "viewer_count": view_cnt,
                 "title": title,
                 "game_name": "",
+                "language": _infer_title_language(f"{author} {title}"),
             }
     except Exception:
         return None

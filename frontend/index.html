@@ -590,6 +590,15 @@
               <button type="submit" class="primary">➕ Add to Watchlist</button>
             </form>
             <div class="toolbar-group">
+              <label for="quickMaxStreams" class="hint">Limit:</label>
+              <select id="quickMaxStreams" aria-label="Max concurrent streams">
+                <option value="15">15 Streams</option>
+                <option value="25">25 Streams</option>
+                <option value="30">30 Streams</option>
+                <option value="45">45 Streams</option>
+                <option value="60">60 Streams</option>
+              </select>
+              <label class="check-row" style="min-height:auto;font-size:0.82rem;"><input type="checkbox" id="quickPreferEnglish" /> 🇬🇧 Prefer EN</label>
               <button type="button" id="btnDiscoverNow">🔍 Discover Live Streams</button>
               <button type="button" id="btnToggleEngine" class="success">⏸ Pause Engine</button>
             </div>
@@ -602,7 +611,7 @@
         </div>
 
         <div class="card">
-          <h3>🎯 Tracked Watchlist (Popular Presets + Manual)</h3>
+          <h3 id="watchlistHeading">🎯 Tracked Watchlist (Active Clipping vs Queued)</h3>
           <div class="watchlist-chips" id="watchlistChips"></div>
         </div>
       </div>
@@ -737,8 +746,8 @@
                 <input id="cfg_FALLBACK_GAME_QUERY" name="FALLBACK_GAME_QUERY" type="text" />
               </div>
               <div class="field">
-                <label for="cfg_MAX_CONCURRENT_STREAMS">Max Concurrent Buffered Streams</label>
-                <input id="cfg_MAX_CONCURRENT_STREAMS" name="MAX_CONCURRENT_STREAMS" type="number" min="1" max="40" />
+                <label for="cfg_MAX_CONCURRENT_STREAMS">Max Concurrent Buffered Streams (1-60)</label>
+                <input id="cfg_MAX_CONCURRENT_STREAMS" name="MAX_CONCURRENT_STREAMS" type="number" min="1" max="60" />
               </div>
               <div class="field">
                 <label for="cfg_STREAM_QUALITY">Buffer Stream Quality</label>
@@ -784,6 +793,7 @@
                 <input id="cfg_VISUAL_EVAL_INTERVAL_SEC" name="VISUAL_EVAL_INTERVAL_SEC" type="number" min="2" max="30" />
               </div>
               <div class="field" style="justify-content:flex-end;">
+                <label class="check-row"><input type="checkbox" id="cfg_PREFER_ENGLISH_STREAMS" name="PREFER_ENGLISH_STREAMS" /> Prefer English Streams (prioritizes EN + top viewers)</label>
                 <label class="check-row"><input type="checkbox" id="cfg_PREFER_FACECAM_STREAMS" name="PREFER_FACECAM_STREAMS" /> Prefer Facecam Streams (higher priority + reaction score)</label>
                 <label class="check-row"><input type="checkbox" id="cfg_AUTO_DISCOVER_TWITCH" name="AUTO_DISCOVER_TWITCH" /> Auto-discover Top Twitch Streams</label>
                 <label class="check-row"><input type="checkbox" id="cfg_AUTO_DISCOVER_YOUTUBE" name="AUTO_DISCOVER_YOUTUBE" /> Auto-discover Top YouTube Live Streams</label>
@@ -1084,6 +1094,16 @@
         document.getElementById('dotEngine').className = 'dot ' + (dash.engine_enabled ? 'ok' : 'warn');
         document.getElementById('lblEngine').textContent = dash.engine_enabled ? `Watching (${dash.active_count})` : 'Paused';
 
+        const qMaxEl = document.getElementById('quickMaxStreams');
+        if (qMaxEl && document.activeElement !== qMaxEl && dash.max_concurrent_streams) {
+          const valStr = String(dash.max_concurrent_streams);
+          if ([...qMaxEl.options].some((o) => o.value === valStr)) qMaxEl.value = valStr;
+        }
+        const qEnEl = document.getElementById('quickPreferEnglish');
+        if (qEnEl && document.activeElement !== qEnEl && dash.prefer_english !== undefined) {
+          qEnEl.checked = Boolean(dash.prefer_english);
+        }
+
         const btnToggle = document.getElementById('btnToggleEngine');
         btnToggle.textContent = dash.engine_enabled ? '⏸ Pause Engine' : '▶ Resume Engine';
         btnToggle.className = dash.engine_enabled ? 'danger' : 'success';
@@ -1135,7 +1155,7 @@
             <article class="stream-card">
               <div class="stream-thumb-wrap">
                 ${s.thumb_url ? `<img src="${esc(s.thumb_url)}" alt="${esc(s.display_name)} live frame" />` : `<div style="display:grid;place-items:center;height:100%;color:var(--muted);font-size:0.85rem;">Buffering ${s.buffered_sec}s...</div>`}
-                <span class="stream-badge ${esc(s.platform)}">${esc(s.platform.toUpperCase())} • ${Number(s.viewer_count || 0).toLocaleString()}</span>
+                <span class="stream-badge ${esc(s.platform)}">${esc(s.platform.toUpperCase())} • ${esc(s.language || 'EN')} • ${Number(s.viewer_count || 0).toLocaleString()}</span>
                 <span class="facecam-badge ${s.has_facecam ? 'has' : 'none'}">${s.has_facecam ? `📷 CAM (${esc(s.facecam_corner.replace('_', '-'))})` : '🎮 GAMEPLAY'}</span>
                 <span class="score-pill" style="color:${s.combined_score >= 65 ? '#34d399' : '#e2e8f0'}">Score ${s.combined_score}/100</span>
               </div>
@@ -1185,14 +1205,39 @@
         }
 
         // Watchlist chips
+        document.getElementById('watchlistHeading').textContent =
+          `🎯 Tracked Watchlist — Active Clipping: ${watch.active_count ?? dash.active_count} / ${watch.max_concurrent_streams ?? 30} (Ranked by Watchlist + EN + Popularity)`;
         const chips = document.getElementById('watchlistChips');
-        chips.innerHTML = watch.streamers.map((w) => `
-          <span class="chip">
-            <span>${w.is_live ? '🟢' : '⚫'} ${w.has_facecam ? '📷' : ''} <strong>${esc(w.display_name)}</strong> (${esc(w.platform)})</span>
-            <button type="button" class="sm" data-toggle-watch="${esc(w.id)}" data-enabled="${w.enabled ? '1' : '0'}">${w.enabled ? 'On' : 'Off'}</button>
-            <button type="button" class="sm" data-del-watch="${esc(w.id)}" aria-label="Remove ${esc(w.display_name)}">✕</button>
-          </span>
-        `).join('');
+        chips.innerHTML = watch.streamers.map((w) => {
+          const stateBadge = w.is_buffering
+            ? '<span style="color:#34d399;font-weight:700;">🟢 CLIPPING</span>'
+            : (w.is_live && w.enabled
+              ? '<span style="color:#f59e0b;font-weight:700;">⏳ QUEUED</span>'
+              : '<span class="hint">⚫ OFFLINE</span>');
+          const langTag = w.language ? w.language.toUpperCase() : 'EN';
+          const vCount = w.viewer_count ? ` • ${Number(w.viewer_count).toLocaleString()}` : '';
+          return `
+            <span class="chip" style="${w.is_buffering ? 'border-color:rgba(16,185,129,0.6);' : (w.is_live && w.enabled ? '' : 'opacity:0.62;')}">
+              <span>${stateBadge} ${w.has_facecam ? '📷' : ''} <strong>${esc(w.display_name)}</strong> (${esc(w.platform)} • ${esc(langTag)}${vCount})</span>
+              ${(w.is_live && w.enabled && !w.is_buffering) ? `<button type="button" class="sm primary" data-boost-watch="${esc(w.id)}" title="Pin into active buffer pool immediately">📌 Boost</button>` : ''}
+              <button type="button" class="sm" data-toggle-watch="${esc(w.id)}" data-enabled="${w.enabled ? '1' : '0'}">${w.enabled ? 'On' : 'Off'}</button>
+              <button type="button" class="sm" data-del-watch="${esc(w.id)}" aria-label="Remove ${esc(w.display_name)}">✕</button>
+            </span>
+          `;
+        }).join('');
+
+        chips.querySelectorAll('[data-boost-watch]').forEach((b) => {
+          b.addEventListener('click', async () => {
+            await api(`/api/streams/watchlist/${encodeURIComponent(b.dataset.boostWatch)}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ enabled: true, priority: 99, in_paid_watchlist: true }),
+            });
+            showToast('Boosted streamer into active clipping pool!');
+            refreshRadarAndStats();
+            refreshPaidWatchlist(false);
+          });
+        });
 
         chips.querySelectorAll('[data-toggle-watch]').forEach((b) => {
           b.addEventListener('click', async () => {
@@ -1649,6 +1694,28 @@
         body: JSON.stringify({ enabled: next }),
       });
       showToast(next ? 'Engine resumed!' : 'Engine paused.');
+      refreshRadarAndStats();
+    });
+
+    document.getElementById('quickMaxStreams').addEventListener('change', async (e) => {
+      const val = Number(e.target.value);
+      await api('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ MAX_CONCURRENT_STREAMS: val }),
+      });
+      showToast(`Updated concurrent limit to ${val} streams!`);
+      refreshRadarAndStats();
+    });
+
+    document.getElementById('quickPreferEnglish').addEventListener('change', async (e) => {
+      const val = Boolean(e.target.checked);
+      await api('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ PREFER_ENGLISH_STREAMS: val }),
+      });
+      showToast(val ? 'Prioritizing English + top streamers!' : 'Sorting purely by viewers & facecam.');
       refreshRadarAndStats();
     });
 
