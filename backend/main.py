@@ -31,9 +31,9 @@ async def _handle_new_clip(clip: dict) -> None:
     if not settings.AUTO_POST_ENABLED or score < float(settings.AUTO_POST_THRESHOLD):
         return
 
-    platforms = get_configured_platforms()
+    platforms = get_configured_platforms(respect_yt_limit=True)
     if not platforms:
-        stream_manager.log_event("AUTOPOST", f"Score {score}/100 hit Auto-Post threshold, but no social platforms are configured.")
+        stream_manager.log_event("AUTOPOST", f"Score {score}/100 hit Auto-Post threshold, but no available platforms right now.")
         return
 
     guard = await asyncio.to_thread(check_autopost_rate_limit)

@@ -47,6 +47,30 @@ VAGUE_FILLER_PHRASES = (
     "yelling and interacting",
 )
 
+MUNDANE_SLOP_PHRASES = (
+    "reacting to the chat",
+    "reacting to chat",
+    "reacts to chat",
+    "discussing strategy",
+    "discussing his plans",
+    "discussing plans",
+    "discussing the map",
+    "talking to someone in the car",
+    "talking to a character",
+    "stops at a gas station",
+    "stopped at a gas station",
+    "currently in a boat",
+    "navigating a boat",
+    "reacting to bugs",
+    "reacting to a phone call",
+    "in the middle of a tournament",
+    "live streaming on twitch",
+    "chat overlay showing",
+    "looking at the map",
+    "browsing the menu",
+    "waiting in the lobby",
+)
+
 VLM_PRESETS: Dict[str, Dict[str, Any]] = {
     "qwen2.5-vl-3b": {
         "id": "qwen2.5-vl-3b",
@@ -823,25 +847,27 @@ class VisionModelManager:
         chat_lines = " | ".join(chat_sample[-5:]) if chat_sample else fallback_kw
         speech_line = f'Streamer actually said: "{transcript}"\n' if len(transcript.strip()) >= 5 else ""
         prompt = (
-            f"You are a Twitch/YouTube gaming clip editor analyzing a GTA clip from {streamer_name}.\n"
+            f"You are a selective viral TikTok/Shorts gaming clip editor evaluating a clip from {streamer_name}.\n"
             f"Streamer: {streamer_name}\n"
             f"{speech_line}"
             f"Chat burst ({chat_mps:.1f} msg/s): {chat_lines}\n"
-            f"Write a specific 6-10 word factual headline starting with '{streamer_name}' describing ONLY what you actually see in these 3 frames and hear in the quote "
-            "(name the exact action, vehicle, fight, crash, stunt, dialogue, or facial reaction). "
-            "NEVER copy stock examples, NEVER invent other streamer names, NEVER write vague filler like 'yelling in the game' or 'reacting to chat', and NEVER put hashtags in overlay_caption.\n"
-            "ONLY set is_commercial_break=true if ALL frames are literally a Twitch 'Commercial break in progress' slate or offline screen with zero game visible.\n"
+            "First rate excitement_score (0-100) and check is_mundane_slop:\n"
+            "- Set is_mundane_slop=true and excitement_score < 45 if the clip ONLY shows routine walking, casual driving, stopping at a gas station, "
+            "talking to chat/teammates, discussing strategy/plans, navigating a menu/map, or low-stakes dialogue with NO crash, explosion, shootout, heist chaos, funny fail, clutch play, or shocked/screaming facecam reaction.\n"
+            "- ONLY set is_mundane_slop=false and excitement_score >= 60 if something genuinely entertaining, intense, chaotic, funny, or emotional actually happens.\n"
+            f"If worth clipping, write a punchy 4-9 word viral hook starting with '{streamer_name}:' describing the climax (NOT dry wording like '{streamer_name} is in the middle of...').\n"
+            "ONLY set is_commercial_break=true if ALL frames are literally a Twitch commercial break slate or offline card with no game visible.\n"
             "Respond ONLY with valid JSON:\n"
-            '{"is_commercial_break": <true/false>, '
-            f'"overlay_caption": "<6-11 words starting with {streamer_name} describing concrete visual action>", '
+            '{"is_commercial_break": <true/false>, "is_mundane_slop": <true/false>, "excitement_score": <0-100>, '
+            f'"overlay_caption": "<4-9 word punchy hook starting with {streamer_name}:>", '
             f'"title": "<catchy Shorts title with {streamer_name}>", '
-            '"summary": "<1-2 sentence breakdown of exact gameplay and streamer reaction>", '
+            '"summary": "<1-2 sentence breakdown of the exact hype moment>", '
             '"caption": "<social post caption with #GTA6 #GTAVI #Gaming hashtags>"}'
         )
 
         sem = self._get_semaphore()
         async with sem:
-            res = await self._query_vlm_b64_images(b64_frames[:3], prompt, max_tokens=260)
+            res = await self._query_vlm_b64_images(b64_frames[:3], prompt, max_tokens=280)
 
         if not res:
             return fallback
@@ -849,12 +875,22 @@ class VisionModelManager:
         raw_overlay = str(res.get("overlay_caption") or "").strip()
         raw_title = str(res.get("title") or "").strip()
         raw_summary = str(res.get("summary") or "").strip()
+        excitement = float(max(0.0, min(100.0, res.get("excitement_score", 70.0))))
 
         flagged_ad = bool(res.get("is_commercial_break") or res.get("is_ad_or_break"))
         if self._contains_blocked_phrase(raw_overlay, raw_title, raw_summary) or (
             flagged_ad and not any(k in raw_summary.lower() for k in ("car", "driv", "shoot", "walk", "run", "fly", "game", "character", "police", "gta"))
         ):
             return {"reject_reason": f"Non-gameplay / ad break detected ({raw_summary[:80]})"}
+
+        joined_low = f"{raw_overlay} {raw_summary}".lower()
+        is_slop = (
+            bool(res.get("is_mundane_slop"))
+            or excitement < 52.0
+            or any(p in joined_low for p in MUNDANE_SLOP_PHRASES)
+        )
+        if is_slop:
+            return {"reject_reason": f"Mundane / low-action clip filtered (excite={excitement:.0f}: {raw_summary[:75]})"}
 
         summary = raw_summary or fallback["summary"]
         overlay = self._clean_and_validate_caption(raw_overlay, summary, streamer_name, fallback_kw=fallback_kw)
@@ -870,6 +906,7 @@ class VisionModelManager:
             "summary": summary[:280],
             "caption": caption[:300],
             "transcript": transcript,
+            "excitement_score": excitement,
         }
 
     async def _query_vlm_b64_images(

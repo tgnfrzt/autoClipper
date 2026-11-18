@@ -11,9 +11,8 @@ import websockets
 
 HYPE_TERMS = {
     "omg", "wtf", "clip", "clipped", "no way", "noway", "insane", "crazy", "lmao",
-    "lmfao", "ayo", "pog", "poggers", "kekw", "omegalul", "w", "wasted", "busted",
-    "6 stars", "gta", "gta6", "gtavi", "holy", "what", "bro", "nah", "rip", "f",
-    "sheesh", "fire", "goat", "clutch", "explosion", "dead", "cooked", "real",
+    "lmfao", "ayo", "pog", "poggers", "kekw", "omegalul", "wasted", "busted",
+    "holy", "rip", "sheesh", "clutch", "explosion", "dead", "cooked", "wwwww", "lllll",
 }
 
 
@@ -26,6 +25,7 @@ class StreamChatTracker:
     def __init__(self, stream_id: str) -> None:
         self.stream_id = stream_id
         self.started_at: float = time.time()
+        self.first_message_at: float = 0.0
         self.buckets: Dict[int, int] = {}
         self.recent_messages: Deque[Tuple[float, str, str]] = deque(maxlen=180)
         self.total_messages: int = 0
@@ -33,14 +33,16 @@ class StreamChatTracker:
 
     def add_message(self, user: str, text: str) -> None:
         now = time.time()
+        if self.first_message_at == 0.0:
+            self.first_message_at = now
         sec = int(now)
         self.buckets[sec] = self.buckets.get(sec, 0) + 1
         self.recent_messages.append((now, user, text))
         self.total_messages += 1
         self.last_message_at = now
 
-        # Prune buckets older than 120s
-        cutoff = sec - 120
+        # Prune buckets older than 150s
+        cutoff = sec - 150
         stale = [k for k in self.buckets if k < cutoff]
         for k in stale:
             del self.buckets[k]
@@ -53,21 +55,21 @@ class StreamChatTracker:
         burst_counts = [self.buckets.get(sec - i, 0) for i in range(5)]
         current_mps = sum(burst_counts) / 5.0
 
-        # Adaptive trailing baseline strictly over seconds observed since tracker start
-        elapsed = max(0, int(now - self.started_at))
-        if elapsed <= 8:
+        # Adaptive trailing baseline strictly since first real chat message arrived
+        elapsed = max(0, int(now - self.first_message_at)) if self.first_message_at > 0 else 0
+        if elapsed <= 12:
             mean_mps = current_mps
-            std_mps = max(1.0, current_mps * 0.5)
+            std_mps = max(1.2, current_mps * 0.5)
         else:
-            max_lookback = min(95, elapsed)
+            max_lookback = min(115, elapsed)
             baseline_counts = [self.buckets.get(sec - i, 0) for i in range(5, max_lookback)]
             mean_mps = sum(baseline_counts) / max(1, len(baseline_counts))
             variance = sum((c - mean_mps) ** 2 for c in baseline_counts) / max(1, len(baseline_counts))
             std_mps = math.sqrt(variance)
 
-        # Spike ratio & Z-score
-        spike_ratio = current_mps / max(0.5, mean_mps)
-        z_score = (current_mps - mean_mps) / max(0.6, std_mps)
+        # Spike ratio & Z-score relative to this channel's normal pace
+        spike_ratio = current_mps / max(0.8, mean_mps)
+        z_score = (current_mps - mean_mps) / max(1.0, std_mps)
 
         # Hype keyword & caps density over last 6 seconds
         recent_texts = [t for ts, _, t in self.recent_messages if (now - ts) <= 6.0]
@@ -84,23 +86,23 @@ class StreamChatTracker:
             if "no way" in low:
                 kw_counter["NO WAY"] += 1
                 matched_msg = True
-            if "???" in msg or "!!!" in msg or (len(msg) >= 4 and msg.isupper()):
+            if "???" in msg or "!!!" in msg or (len(msg) >= 6 and sum(1 for ch in msg if ch.isalpha()) >= 4 and msg.isupper()):
                 matched_msg = True
             if matched_msg:
                 hype_hits += 1
 
         hype_density = (hype_hits / len(recent_texts)) if recent_texts else 0.0
 
-        # Combine velocity burst + hype token density into 0..100 score
-        # - Wait until >= 18s baseline warmup has elapsed before full scoring
-        # - Needs real message volume (current_mps >= 0.8) so 1 random message in an empty chat doesn't false-trigger
-        warmup_gate = min(1.0, max(0.0, (elapsed - 10) / 15.0))
-        volume_gate = min(1.0, current_mps / 1.8)
-        velocity_component = min(75.0, max(0.0, (z_score * 13.0) + max(0.0, spike_ratio - 1.35) * 16.0))
-        absolute_boost = min(12.0, current_mps * 0.4)
+        # Combine genuine velocity SURGE (above baseline) + reaction outburst density:
+        # Normal steady chat on huge channels (even 40 msg/s steady) stays ~20-40,
+        # while a real >=1.7x surge + hype emotes rockets to 80-100.
+        warmup_gate = min(1.0, max(0.0, (elapsed - 12) / 16.0))
+        volume_gate = min(1.0, current_mps / 2.2)
+        velocity_component = min(75.0, max(0.0, (max(0.0, z_score - 0.3) * 14.0) + max(0.0, spike_ratio - 1.45) * 28.0))
         hype_component = min(25.0, hype_density * 35.0)
+        surge_gate = 1.0 if spike_ratio >= 1.35 else max(0.25, spike_ratio / 1.35)
 
-        chat_score = round(min(100.0, warmup_gate * volume_gate * (velocity_component + absolute_boost + hype_component)), 1)
+        chat_score = round(min(100.0, warmup_gate * volume_gate * surge_gate * (velocity_component + hype_component)), 1)
         top_keywords = [k for k, _ in kw_counter.most_common(6)]
         if not top_keywords and recent_texts:
             # Grab most repeated non-trivial word

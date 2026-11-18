@@ -18,12 +18,43 @@ from backend.modules.publishers.youtube import publish_youtube_shorts
 
 _publish_lock = threading.Lock()
 _active_publishes: set[str] = set()
+_youtube_limited_until: float = 0.0
 
 
-def get_configured_platforms() -> List[str]:
+def is_youtube_temporarily_limited() -> bool:
+    global _youtube_limited_until
+    import time
+
+    now_ts = time.time()
+    if now_ts < _youtube_limited_until:
+        return True
+    # Also inspect SQLite post_history for recent (<2h) uploadLimitExceeded responses across restarts
+    two_hours_ago = (datetime.utcnow() - timedelta(hours=2)).isoformat()
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """
+            SELECT published_at FROM post_history
+            WHERE platform LIKE 'youtube%' AND status = 'failed'
+              AND (error_message LIKE '%uploadLimitExceeded%' OR error_message LIKE '%24h channel upload limit%')
+              AND published_at >= ?
+            ORDER BY published_at DESC LIMIT 1
+            """,
+            (two_hours_ago,),
+        ).fetchone()
+        if row:
+            _youtube_limited_until = now_ts + 1800.0
+            return True
+    finally:
+        conn.close()
+    return False
+
+
+def get_configured_platforms(respect_yt_limit: bool = False) -> List[str]:
     platforms: List[str] = []
     if is_youtube_configured():
-        platforms.append("youtube_shorts")
+        if not (respect_yt_limit and is_youtube_temporarily_limited()):
+            platforms.append("youtube_shorts")
     if is_tiktok_configured():
         platforms.append("tiktok")
     if is_instagram_configured():
@@ -98,6 +129,7 @@ def check_autopost_rate_limit() -> Dict[str, Any]:
         "mins_since_last": round(mins_since_last, 1) if last_ts else None,
         "cooldown_remaining_min": cooldown_left,
         "min_interval_min": min_gap,
+        "youtube_limited": is_youtube_temporarily_limited(),
     }
 
 
@@ -160,7 +192,14 @@ def publish_clip_to_platforms(clip_id: str, platforms: List[str]) -> Dict[str, A
             else:
                 receipt = {"success": False, "platform": p_norm, "error": f"Unknown platform: {plat}"}
         except Exception as exc:
-            receipt = {"success": False, "platform": p_norm, "error": str(exc)}
+            err_str = str(exc)
+            if p_norm in ("youtube", "youtube_shorts", "yt") and (
+                "uploadLimitExceeded" in err_str or "24h channel upload limit" in err_str
+            ):
+                global _youtube_limited_until
+                import time
+                _youtube_limited_until = time.time() + 7200.0
+            receipt = {"success": False, "platform": p_norm, "error": err_str}
         finally:
             with _publish_lock:
                 _active_publishes.discard(lock_key)

@@ -346,7 +346,7 @@ class StreamManagerService:
                         self._live_state.pop(sid, None)
                         continue
 
-                    if state.get("visual_blocked") or state["visual_score"] < 12.0:
+                    if state.get("visual_blocked") or state["visual_score"] < 45.0:
                         combined = 0.0
                     else:
                         combined = compute_combined_score(state["chat_score"], state["visual_score"])
@@ -477,8 +477,11 @@ class StreamManagerService:
                         except Exception:
                             pass
                 self.log_event("FILTERED", f"Auto-filtered clip from {streamer_name}: {meta['reject_reason']}")
-                self._set_job_progress(job_id, streamer_name, 100, "Filtered (Commercial / Non-gameplay)")
+                self._set_job_progress(job_id, streamer_name, 100, "Filtered (Low Action / Commercial)")
                 return None
+
+            post_excitement = float(meta.get("excitement_score") or visual_score)
+            refined_combined = round(min(100.0, 0.55 * float(combined_score) + 0.45 * post_excitement), 1)
 
             self._set_job_progress(job_id, streamer_name, 72, "Rendering Smart 9:16 Gaming Split + Burned-In Caption...")
             rendered_path = ""
@@ -511,9 +514,9 @@ class StreamManagerService:
                 thumb_path=clip_thumb,
                 duration_sec=actual_dur,
                 chat_score=chat_score,
-                visual_score=visual_score,
+                visual_score=round(post_excitement, 1),
                 facecam_score=facecam_score,
-                combined_score=combined_score,
+                combined_score=refined_combined,
                 chat_mps=chat_mps,
                 chat_keywords=chat_keywords,
                 facecam_corner=actual_facecam_corner,

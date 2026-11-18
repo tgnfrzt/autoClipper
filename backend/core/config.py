@@ -145,9 +145,9 @@ class Settings:
     # Smart Auto-Post & Anti-Ban / Anti-Flag Rate Guard
     AUTO_POST_ENABLED: bool = _env_bool("AUTO_POST_ENABLED", True)
     AUTO_POST_THRESHOLD: float = _env_float("AUTO_POST_THRESHOLD", 88.0)
-    AUTO_POST_MIN_INTERVAL_MIN: int = _env_int("AUTO_POST_MIN_INTERVAL_MIN", 20)
-    AUTO_POST_MAX_PER_HOUR: int = _env_int("AUTO_POST_MAX_PER_HOUR", 3)
-    AUTO_POST_MAX_PER_DAY: int = _env_int("AUTO_POST_MAX_PER_DAY", 15)
+    AUTO_POST_MIN_INTERVAL_MIN: int = _env_int("AUTO_POST_MIN_INTERVAL_MIN", 8)
+    AUTO_POST_MAX_PER_HOUR: int = _env_int("AUTO_POST_MAX_PER_HOUR", 8)
+    AUTO_POST_MAX_PER_DAY: int = _env_int("AUTO_POST_MAX_PER_DAY", 35)
 
     # AI Vision Model (Small/MoE local or OpenAI-compatible)
     VLM_PROVIDER: str = _env_str("VLM_PROVIDER", "llamacpp")

@@ -79,8 +79,18 @@ def publish_youtube_shorts(
     request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
 
     response = None
-    while response is None:
-        _, response = request.next_chunk()
+    try:
+        while response is None:
+            _, response = request.next_chunk()
+    except Exception as exc:
+        msg = str(exc)
+        if "uploadLimitExceeded" in msg or "exceeded the number of videos" in msg.lower():
+            raise RuntimeError(
+                "YouTube 24h channel upload limit reached (uploadLimitExceeded). "
+                "Unlock Advanced Features in YouTube Studio > Settings > Channel > Feature Eligibility, "
+                "or wait up to 24h for the rolling upload slot to reset."
+            ) from exc
+        raise
 
     video_id = response.get("id")
     post_url = f"https://www.youtube.com/shorts/{video_id}" if is_shorts else f"https://www.youtube.com/watch?v={video_id}"

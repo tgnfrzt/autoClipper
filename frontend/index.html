@@ -1139,15 +1139,16 @@
           document.getElementById('lblAutoThresh').textContent = Math.round(dash.autopost_threshold);
         }
         const guard = dash.autopost_guard || {};
+        const ytNote = guard.youtube_limited ? ' • YT 24h limit' : '';
         if (!dash.autopost_enabled) {
           document.getElementById('dotAutoPost').className = 'dot warn';
-          document.getElementById('lblAutoPostGuard').textContent = 'Auto-Post: Off';
+          document.getElementById('lblAutoPostGuard').textContent = `Auto-Post: Off${ytNote}`;
         } else if (guard.can_post) {
           document.getElementById('dotAutoPost').className = 'dot ok';
-          document.getElementById('lblAutoPostGuard').textContent = `Auto-Post: Ready (${guard.clips_last_hour}/${guard.max_per_hour}h)`;
+          document.getElementById('lblAutoPostGuard').textContent = `Auto-Post: Ready (${guard.clips_last_hour}/${guard.max_per_hour}h)${ytNote}`;
         } else {
           document.getElementById('dotAutoPost').className = 'dot warn';
-          document.getElementById('lblAutoPostGuard').textContent = `Shield: ${guard.reason}`;
+          document.getElementById('lblAutoPostGuard').textContent = `Shield: ${guard.reason}${ytNote}`;
         }
 
         const btnToggle = document.getElementById('btnToggleEngine');
