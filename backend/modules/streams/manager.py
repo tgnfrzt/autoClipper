@@ -11,7 +11,7 @@ from backend.core.config import CLIPS_RAW_DIR, THUMBS_DIR, settings
 from backend.core.database import fetch_all_streamers, get_db, update_streamer_facecam, upsert_streamer
 from backend.modules.ai.clip_detector import compute_combined_score, save_clip_record
 from backend.modules.ai.vision_evaluator import vision_manager
-from backend.modules.processors.video_processor import render_clip_for_social
+from backend.modules.processors.video_processor import auto_trim_to_action_start, render_clip_for_social
 from backend.modules.streams.chat_monitor import chat_monitor
 from backend.modules.streams.discovery import (
     check_twitch_channel_live,
@@ -412,14 +412,30 @@ class StreamManagerService:
                 self._set_job_progress(job_id, streamer_name, 10, f"Waiting {delay_sec}s to capture climax...")
                 await asyncio.sleep(delay_sec)
 
-            self._set_job_progress(job_id, streamer_name, 22, "Cutting raw 30-60s HLS clip (0-decode)...")
+            self._set_job_progress(job_id, streamer_name, 22, "Cutting raw 45-60s HLS clip (0-decode)...")
             clip_uid = f"raw_{int(time.time())}_{uuid.uuid4().hex[:6]}"
             raw_mp4 = str(CLIPS_RAW_DIR / f"{clip_uid}.mp4")
-            clip_dur = max(30, min(60, int(settings.CLIP_DURATION_SEC)))
+            min_raw = 45 if settings.AUTO_TRIM_ENABLED else 30
+            clip_dur = max(min_raw, min(60, int(settings.CLIP_DURATION_SEC)))
             ok, actual_dur, err = await asyncio.to_thread(buf.cut_clip_sync, clip_dur, raw_mp4)
             if not ok:
                 self.log_event("ERROR", f"Clip cut failed for {streamer_name}: {err}")
                 return None
+
+            if settings.AUTO_TRIM_ENABLED:
+                self._set_job_progress(job_id, streamer_name, 34, "Auto-trimming dead intro to action onset...")
+                trim_res = await asyncio.to_thread(
+                    auto_trim_to_action_start,
+                    raw_mp4,
+                    settings.MIN_CLIP_DURATION_SEC,
+                )
+                if trim_res.get("trimmed"):
+                    old_d = float(trim_res.get("original_duration") or actual_dur)
+                    actual_dur = float(trim_res.get("duration") or actual_dur)
+                    self.log_event(
+                        "AUTOCUT",
+                        f"Auto-trimmed {trim_res['trim_start']:.1f}s dead intro from {streamer_name} ({old_d:.0f}s -> {actual_dur:.0f}s, {trim_res['reason']}).",
+                    )
 
             frame_path = await buf.extract_latest_frame()
             clip_thumb = str(THUMBS_DIR / f"{clip_uid}.jpg")

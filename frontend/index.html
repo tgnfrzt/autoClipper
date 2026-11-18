@@ -660,8 +660,15 @@
                 <input id="cfg_TRIGGER_SCORE_THRESHOLD" name="TRIGGER_SCORE_THRESHOLD" type="number" step="1" min="20" max="100" />
               </div>
               <div class="field">
-                <label for="cfg_CLIP_DURATION_SEC">Clip Length (30 - 60 seconds)</label>
+                <label for="cfg_CLIP_DURATION_SEC">Raw Lookback Length (30 - 60 sec)</label>
                 <input id="cfg_CLIP_DURATION_SEC" name="CLIP_DURATION_SEC" type="number" min="30" max="60" />
+              </div>
+              <div class="field">
+                <label for="cfg_MIN_CLIP_DURATION_SEC">Min Duration After Auto-Cut (sec)</label>
+                <input id="cfg_MIN_CLIP_DURATION_SEC" name="MIN_CLIP_DURATION_SEC" type="number" min="18" max="45" />
+              </div>
+              <div class="field" style="justify-content:flex-end;">
+                <label class="check-row"><input type="checkbox" id="cfg_AUTO_TRIM_ENABLED" name="AUTO_TRIM_ENABLED" /> Smart Auto-Cut (Trim dead intro to where action starts)</label>
               </div>
               <div class="field">
                 <label for="cfg_POST_TRIGGER_DELAY_SEC">Post-Spike Delay (capture aftermath, sec)</label>

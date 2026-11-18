@@ -44,6 +44,8 @@ class SettingsUpdateRequest(BaseModel):
     VISUAL_WEIGHT: Optional[float] = None
     TRIGGER_SCORE_THRESHOLD: Optional[float] = None
     CLIP_DURATION_SEC: Optional[int] = None
+    AUTO_TRIM_ENABLED: Optional[bool] = None
+    MIN_CLIP_DURATION_SEC: Optional[int] = None
     POST_TRIGGER_DELAY_SEC: Optional[int] = None
     CLIP_COOLDOWN_SEC: Optional[int] = None
     VISUAL_EVAL_INTERVAL_SEC: Optional[int] = None
@@ -125,6 +127,8 @@ def get_all_settings() -> Dict[str, Any]:
         "VISUAL_WEIGHT": settings.VISUAL_WEIGHT,
         "TRIGGER_SCORE_THRESHOLD": settings.TRIGGER_SCORE_THRESHOLD,
         "CLIP_DURATION_SEC": settings.CLIP_DURATION_SEC,
+        "AUTO_TRIM_ENABLED": settings.AUTO_TRIM_ENABLED,
+        "MIN_CLIP_DURATION_SEC": settings.MIN_CLIP_DURATION_SEC,
         "POST_TRIGGER_DELAY_SEC": settings.POST_TRIGGER_DELAY_SEC,
         "CLIP_COOLDOWN_SEC": settings.CLIP_COOLDOWN_SEC,
         "VISUAL_EVAL_INTERVAL_SEC": settings.VISUAL_EVAL_INTERVAL_SEC,

@@ -2,6 +2,7 @@ import asyncio
 import html
 import json
 import os
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -191,6 +192,48 @@ def _action_html(title: str, body_html: str, accent: str = "#10b981") -> HTMLRes
     )
 
 
+@router.get("/{clip_id}/publish-status")
+def get_clip_publish_status(clip_id: str) -> Dict[str, Any]:
+    clip = get_clip(clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT platform, status, post_url, error_message, published_at FROM post_history WHERE clip_id = ? ORDER BY published_at DESC LIMIT 12",
+            (clip_id,),
+        ).fetchall()
+        history = [dict(r) for r in rows]
+    finally:
+        conn.close()
+    return {
+        "clip_id": clip_id,
+        "status": clip["status"],
+        "overlay_caption": clip.get("overlay_caption") or clip["streamer_name"],
+        "history": history,
+    }
+
+
+async def _background_publish_and_notify(clip_id: str, platforms: List[str], discord_message_id: str) -> None:
+    try:
+        res = await asyncio.to_thread(publish_clip_to_platforms, clip_id, platforms)
+        if discord_message_id:
+            discord_lines: List[str] = []
+            for item in res.get("results", []):
+                plat = str(item.get("platform", "")).upper()
+                if item.get("success"):
+                    url = item.get("post_url", "")
+                    discord_lines.append(f"✅ **{plat}**: Posted! {url}")
+                else:
+                    err = str(item.get("error", "Failed"))
+                    discord_lines.append(f"❌ **{plat}**: {err}")
+            if discord_lines:
+                await discord_bot.update_webhook_message_status(discord_message_id, "\n".join(discord_lines))
+    except Exception as exc:
+        if discord_message_id:
+            await discord_bot.update_webhook_message_status(discord_message_id, f"❌ **Publish error**: {exc}")
+
+
 @router.get("/{clip_id}/quick-action", response_class=HTMLResponse)
 async def discord_quick_action(clip_id: str, action: str = "all"):
     clip = get_clip(clip_id)
@@ -226,40 +269,109 @@ async def discord_quick_action(clip_id: str, action: str = "all"):
     else:
         return _action_html("Invalid Action", f"<p>Unknown action: {html.escape(action)}</p>", "#ef4444")
 
+    started_iso = datetime.utcnow().isoformat()
     conn = get_db()
     with conn:
-        conn.execute("UPDATE clips SET status = 'accepted' WHERE id = ?", (clip_id,))
+        existing_rows = conn.execute(
+            "SELECT platform, status, post_url FROM post_history WHERE clip_id = ? AND status = 'posted' ORDER BY published_at DESC",
+            (clip_id,),
+        ).fetchall()
+        already_posted = {}
+        for er in existing_rows:
+            if er["platform"] not in already_posted:
+                already_posted[er["platform"]] = er["post_url"] or ""
+        pending_platforms = [p for p in platforms if p not in already_posted]
+        if pending_platforms:
+            conn.execute("UPDATE clips SET status = 'accepted' WHERE id = ?", (clip_id,))
     conn.close()
 
-    if clip.get("discord_message_id"):
-        await discord_bot.update_webhook_message_status(
-            clip["discord_message_id"],
-            f"⏳ **Publishing `{clip_id}` to {', '.join(platforms)}...**",
+    cap_label = html.escape(clip.get("overlay_caption") or clip["streamer_name"])
+
+    if not pending_platforms:
+        done_items = []
+        for p in platforms:
+            url = already_posted.get(p, "")
+            lnk = f' — <a href="{html.escape(url)}" target="_blank" style="color:#38bdf8;">View Post</a>' if url else ""
+            done_items.append(f"<li>✅ <strong>{html.escape(p.upper())}</strong>: Already Published!{lnk}</li>")
+        return _action_html(
+            "✅ Already Published",
+            f"<p>Clip: <strong>{cap_label}</strong></p><ul>{''.join(done_items)}</ul>",
+            "#10b981",
         )
 
-    res = await asyncio.to_thread(publish_clip_to_platforms, clip_id, platforms)
-    discord_lines: List[str] = []
-    html_items: List[str] = []
-    for item in res["results"]:
-        plat = str(item.get("platform", "")).upper()
-        if item.get("success"):
-            url = item.get("post_url", "")
-            discord_lines.append(f"✅ **{plat}**: Posted! {url}")
-            link_html = f' — <a href="{html.escape(url)}" target="_blank" style="color:#38bdf8;">View Post</a>' if url else ""
-            html_items.append(f"<li>✅ <strong>{html.escape(plat)}</strong>: Published!{link_html}</li>")
-        else:
-            err = str(item.get("error", "Failed"))
-            discord_lines.append(f"❌ **{plat}**: {err}")
-            html_items.append(f"<li>❌ <strong>{html.escape(plat)}</strong>: {html.escape(err)}</li>")
-
     if clip.get("discord_message_id"):
-        await discord_bot.update_webhook_message_status(clip["discord_message_id"], "\n".join(discord_lines))
+        asyncio.create_task(
+            discord_bot.update_webhook_message_status(
+                clip["discord_message_id"],
+                f"⏳ **Publishing `{clip_id}` to {', '.join(pending_platforms)}...**",
+            )
+        )
 
-    return _action_html(
-        "🚀 Publishing Complete" if res["any_success"] else "⚠️ Publishing Finished With Errors",
-        f"<p>Clip: <strong>{html.escape(clip.get('overlay_caption') or clip['streamer_name'])}</strong></p><ul>{''.join(html_items)}</ul>",
-        "#10b981" if res["any_success"] else "#f59e0b",
+    asyncio.create_task(_background_publish_and_notify(clip_id, pending_platforms, clip.get("discord_message_id") or ""))
+
+    plat_badges = ", ".join(p.upper() for p in pending_platforms)
+    targets_json = json.dumps(platforms)
+    initial_rows = "".join(
+        (
+            f'<li>✅ <strong>{html.escape(p.upper())}</strong>: Published!'
+            + (f' — <a href="{html.escape(already_posted[p])}" target="_blank" style="color:#38bdf8;">View Post</a>' if already_posted[p] else "")
+            + "</li>"
+        )
+        if p in already_posted
+        else f'<li>⏳ <strong>{html.escape(p.upper())}</strong>: Uploading...</li>'
+        for p in platforms
     )
+    already_json = json.dumps(already_posted)
+    body_html = f"""
+    <p>Clip: <strong>{cap_label}</strong></p>
+    <p style="font-size:0.92rem; color:#94a3b8;">Clip accepted &amp; publishing started in background for: <strong>{html.escape(plat_badges)}</strong></p>
+    <ul id="pubList" style="padding-left:1.2rem;">
+      {initial_rows}
+    </ul>
+    <script>
+      (function() {{
+        const targets = {targets_json};
+        const sinceIso = {json.dumps(started_iso)};
+        const prePosted = {already_json};
+        const listEl = document.getElementById('pubList');
+        async function poll() {{
+          try {{
+            const r = await fetch('/api/clips/{html.escape(clip_id)}/publish-status');
+            if (!r.ok) return;
+            const d = await r.json();
+            const recent = (d.history || []).filter(h => (h.published_at || '') >= sinceIso);
+            const seen = {{}};
+            for (const h of recent) {{
+              if (!seen[h.platform]) seen[h.platform] = h;
+            }}
+            let doneCount = 0;
+            listEl.innerHTML = targets.map(t => {{
+              if (prePosted[t] !== undefined) {{
+                doneCount++;
+                const lnk = prePosted[t] ? ' — <a href="' + prePosted[t] + '" target="_blank" style="color:#38bdf8;">View Post</a>' : '';
+                return '<li>✅ <strong>' + t.toUpperCase() + '</strong>: Published!' + lnk + '</li>';
+              }}
+              const row = seen[t];
+              if (!row) return '<li>⏳ <strong>' + t.toUpperCase() + '</strong>: Uploading...</li>';
+              doneCount++;
+              if (row.status === 'posted') {{
+                const lnk = row.post_url ? ' — <a href="' + row.post_url + '" target="_blank" style="color:#38bdf8;">View Post</a>' : '';
+                return '<li>✅ <strong>' + t.toUpperCase() + '</strong>: Published!' + lnk + '</li>';
+              }}
+              return '<li>❌ <strong>' + t.toUpperCase() + '</strong>: ' + (row.error_message || 'Failed') + '</li>';
+            }}).join('');
+            if (doneCount < targets.length) {{
+              setTimeout(poll, 1800);
+            }}
+          }} catch (e) {{
+            setTimeout(poll, 2500);
+          }}
+        }}
+        setTimeout(poll, 1500);
+      }})();
+    </script>
+    """
+    return _action_html("🚀 Accepted & Publishing Live...", body_html, "#10b981")
 
 
 @router.post("/{clip_id}/send-discord")

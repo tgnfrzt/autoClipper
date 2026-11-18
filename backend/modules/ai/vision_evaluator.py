@@ -537,7 +537,7 @@ class VisionModelManager:
             }
 
         self.total_evaluations += 1
-        cv_res = self.inspect_facecam_and_motion(stream_id, image_path)
+        cv_res = await asyncio.to_thread(self.inspect_facecam_and_motion, stream_id, image_path)
         img = cv_res["img"]
 
         if self._is_twitch_ad_slate(img):
@@ -560,7 +560,8 @@ class VisionModelManager:
             else cv_res["cv_score"]
         )
 
-        if settings.VLM_PROVIDER == "opencv_only" or not self.is_server_healthy():
+        vlm_online = True if settings.VLM_PROVIDER == "opencv_only" else await asyncio.to_thread(self.is_server_healthy)
+        if settings.VLM_PROVIDER == "opencv_only" or not vlm_online:
             return {
                 "visual_score": base_fallback_score,
                 "cv_score": cv_res["cv_score"],
@@ -694,27 +695,22 @@ class VisionModelManager:
                 if self._whisper_model is None:
                     self._whisper_model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
 
-            # Extract last 28 seconds mono 16kHz wav for fast reliable transcription
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
-                wav_path = tf.name
-            try:
-                cmd = [
-                    settings.FFMPEG_PATH,
-                    "-y", "-hide_banner", "-loglevel", "error",
-                    "-sseof", "-28",
-                    "-i", video_path,
-                    "-vn", "-ac", "1", "-ar", "16000",
-                    wav_path,
-                ]
-                res = subprocess.run(cmd, capture_output=True, timeout=20, creationflags=CREATE_NO_WINDOW)
-                if res.returncode != 0 or not os.path.isfile(wav_path) or os.path.getsize(wav_path) < 2000:
-                    return ""
-                segments, _ = self._whisper_model.transcribe(wav_path, beam_size=1, vad_filter=True)
-                text = " ".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
-                return text[:350]
-            finally:
-                if os.path.isfile(wav_path):
-                    os.remove(wav_path)
+            # Pipe last 28 seconds mono 16kHz PCM directly to numpy (avoids PyAV metadata_errors bug)
+            cmd = [
+                settings.FFMPEG_PATH,
+                "-y", "-hide_banner", "-loglevel", "error",
+                "-sseof", "-28",
+                "-i", video_path,
+                "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le",
+                "pipe:1",
+            ]
+            res = subprocess.run(cmd, capture_output=True, timeout=20, creationflags=CREATE_NO_WINDOW)
+            if res.returncode != 0 or len(res.stdout) < 3200:
+                return ""
+            audio_np = np.frombuffer(res.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+            segments, _ = self._whisper_model.transcribe(audio_np, beam_size=1, vad_filter=True)
+            text = " ".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
+            return text[:350]
         except Exception as exc:
             print(f"[Whisper] Transcription note: {exc}")
             return ""
@@ -831,9 +827,9 @@ class VisionModelManager:
             f"Streamer: {streamer_name}\n"
             f"{speech_line}"
             f"Chat burst ({chat_mps:.1f} msg/s): {chat_lines}\n"
-            f"Write a specific 6-11 word on-screen caption starting with '{streamer_name}' that describes the exact visual action or reaction seen in the frames "
-            f"(for example: '{streamer_name} launches a car off the highway ramp' or '{streamer_name} gasps after crashing into a police blockade'). "
-            "NEVER invent other streamer names, NEVER write generic filler like 'yelling in the game' or 'reacting to chat', and NEVER put hashtags in overlay_caption.\n"
+            f"Write a specific 6-10 word factual headline starting with '{streamer_name}' describing ONLY what you actually see in these 3 frames and hear in the quote "
+            "(name the exact action, vehicle, fight, crash, stunt, dialogue, or facial reaction). "
+            "NEVER copy stock examples, NEVER invent other streamer names, NEVER write vague filler like 'yelling in the game' or 'reacting to chat', and NEVER put hashtags in overlay_caption.\n"
             "ONLY set is_commercial_break=true if ALL frames are literally a Twitch 'Commercial break in progress' slate or offline screen with zero game visible.\n"
             "Respond ONLY with valid JSON:\n"
             '{"is_commercial_break": <true/false>, '

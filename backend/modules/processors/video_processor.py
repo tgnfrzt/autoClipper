@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -539,3 +540,214 @@ def ensure_discord_attachable_mp4(video_path: str, max_mb: float = 7.8) -> str:
     except Exception:
         pass
     return video_path
+
+
+def _extract_audio_rms_per_sec(video_path: str, n_sec: int) -> List[float]:
+    if n_sec <= 0:
+        return []
+    create_flags = 0x08000000 if os.name == "nt" else 0
+    try:
+        res = subprocess.run(
+            [
+                settings.FFMPEG_PATH,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                video_path,
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "8000",
+                "-f",
+                "s16le",
+                "pipe:1",
+            ],
+            capture_output=True,
+            timeout=15,
+            creationflags=create_flags,
+        )
+        if res.returncode != 0 or len(res.stdout) < 1600:
+            return [0.0] * n_sec
+        samples = np.frombuffer(res.stdout, dtype=np.int16).astype(np.float32)
+        sr = 8000
+        out: List[float] = []
+        for s in range(n_sec):
+            seg = samples[s * sr : (s + 1) * sr]
+            out.append(float(np.sqrt(np.mean(seg * seg))) if seg.size else 0.0)
+        return out
+    except Exception:
+        return [0.0] * n_sec
+
+
+def _normalize_series(vals: List[float]) -> np.ndarray:
+    arr = np.asarray(vals, dtype=np.float32)
+    if arr.size == 0:
+        return arr
+    lo = float(np.percentile(arr, 5))
+    hi = float(np.percentile(arr, 95))
+    if hi - lo < 1e-5:
+        return np.zeros_like(arr)
+    return np.clip((arr - lo) / (hi - lo) * 100.0, 0.0, 100.0)
+
+
+def auto_trim_to_action_start(
+    video_path: str,
+    min_duration_sec: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Analyzes a raw captured clip (typically 45-60s) backwards from its hype climax using
+    1fps motion + scene-cut detection and per-second audio RMS energy, then trims dead/unrelated
+    intro before the action started (preserving ~3.5s pre-roll context and >= min_duration_sec).
+    """
+    if not os.path.isfile(video_path):
+        return {"trimmed": False, "trim_start": 0.0, "duration": 0.0, "reason": "missing_file"}
+
+    info = probe_video(video_path)
+    dur = float(info.get("duration") or 0.0)
+    min_dur = max(18, int(min_duration_sec or settings.MIN_CLIP_DURATION_SEC))
+    if not settings.AUTO_TRIM_ENABLED or dur <= float(min_dur) + 5.0:
+        return {"trimmed": False, "trim_start": 0.0, "duration": dur, "reason": "kept_full"}
+
+    n_sec = int(dur)
+    motion_vals = [0.0] * n_sec
+    hist_corrs = [1.0] * n_sec
+
+    cap = cv2.VideoCapture(video_path)
+    if cap.isOpened():
+        prev_gray: Optional[np.ndarray] = None
+        prev_hist: Optional[np.ndarray] = None
+        for t in range(n_sec):
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            small = cv2.resize(frame, (160, 90))
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            hist = cv2.calcHist([gray], [0], None, [32], [0, 256])
+            cv2.normalize(hist, hist)
+            if prev_gray is not None:
+                diff = cv2.absdiff(gray, prev_gray)
+                motion_vals[t] = float(np.mean(diff)) * 2.2 + float(np.mean(diff > 25)) * 80.0
+                if prev_hist is not None:
+                    hist_corrs[t] = float(cv2.compareHist(prev_hist, hist, cv2.HISTCMP_CORREL))
+            prev_gray = gray
+            prev_hist = hist
+        cap.release()
+
+    audio_vals = _extract_audio_rms_per_sec(video_path, n_sec)
+    motion_norm = _normalize_series(motion_vals)
+    audio_norm = _normalize_series(audio_vals)
+    has_audio = float(np.max(audio_norm)) > 5.0
+    activity = (0.52 * audio_norm + 0.48 * motion_norm) if has_audio else motion_norm
+    if activity.size < min_dur or float(np.max(activity)) < 8.0:
+        return {"trimmed": False, "trim_start": 0.0, "duration": dur, "reason": "flat_signal"}
+
+    # Locate action climax using 3-second rolling window in latter 70% of clip
+    peak_lo = max(4, int(n_sec * 0.30))
+    peak_hi = max(peak_lo + 1, n_sec - 2)
+    best_t = peak_hi - 1
+    best_val = -1.0
+    for t in range(peak_lo, peak_hi):
+        w_val = float(np.mean(activity[max(0, t - 1) : min(n_sec, t + 2)]))
+        if w_val > best_val:
+            best_val = w_val
+            best_t = t
+
+    max_trim = max(0.0, dur - float(min_dur))
+    trim_start = 0.0
+    reason = "action_starts_early"
+
+    # Priority A: hard scene cut / pause-menu exit between t=4 and (best_t - 4) with low prior activity
+    cut_limit = min(int(max_trim) + 1, max(4, best_t - 4))
+    chosen_cut: Optional[int] = None
+    for t in range(4, cut_limit):
+        is_hard_cut = hist_corrs[t] < 0.62 and motion_vals[t] > 32.0
+        was_static_menu = (t >= 2 and float(np.mean(motion_vals[t - 2 : t])) < 3.5 and motion_vals[t] > 20.0)
+        if (is_hard_cut or was_static_menu) and float(np.mean(activity[:t])) < 0.60 * best_val:
+            chosen_cut = t
+
+    if chosen_cut is not None:
+        trim_start = max(0.0, float(chosen_cut) - 1.5)
+        reason = "scene_cut"
+    else:
+        # Priority B: walk backward from climax to find earliest onset above quiet lead-in baseline
+        baseline = float(np.percentile(activity[:best_t], 25)) if best_t >= 4 else 0.0
+        onset_thresh = baseline + 0.25 * max(0.0, best_val - baseline)
+        onset_t = best_t
+        quiet_streak = 0
+        for t in range(best_t, -1, -1):
+            local_avg = float(np.mean(activity[max(0, t - 1) : min(n_sec, t + 1)]))
+            if local_avg >= onset_thresh:
+                onset_t = t
+                quiet_streak = 0
+            else:
+                quiet_streak += 1
+                if quiet_streak >= 3:
+                    break
+        if onset_t >= 5:
+            trim_start = max(0.0, float(onset_t) - 3.5)
+            reason = "action_onset"
+
+    trim_start = round(min(trim_start, max_trim), 2)
+    if trim_start < 4.0:
+        return {"trimmed": False, "trim_start": 0.0, "duration": dur, "reason": "action_starts_early"}
+
+    p = Path(video_path)
+    tmp_out = str(p.with_name(f"{p.stem}_autotrim.mp4"))
+    try:
+        # Try fast keyframe stream copy first
+        run_ffmpeg(
+            ["-ss", f"{trim_start:.2f}", "-i", video_path, "-c", "copy", "-movflags", "+faststart", tmp_out],
+            timeout=60,
+        )
+        new_dur = float(probe_video(tmp_out).get("duration") or 0.0)
+        expected_dur = dur - trim_start
+        # If keyframe alignment made the clip way too short or missed trimming by >4.5s, perform accurate cut
+        if new_dur < float(min_dur) - 2.0 or (new_dur - expected_dur) > 4.5:
+            if os.path.isfile(tmp_out):
+                os.remove(tmp_out)
+            run_ffmpeg(
+                [
+                    "-ss",
+                    f"{trim_start:.2f}",
+                    "-i",
+                    video_path,
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-crf",
+                    "20",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-movflags",
+                    "+faststart",
+                    tmp_out,
+                ],
+                timeout=120,
+            )
+            new_dur = float(probe_video(tmp_out).get("duration") or 0.0)
+
+        if os.path.isfile(tmp_out) and new_dur >= float(min_dur) - 2.0:
+            os.replace(tmp_out, video_path)
+            return {
+                "trimmed": True,
+                "trim_start": trim_start,
+                "original_duration": dur,
+                "duration": new_dur,
+                "reason": reason,
+            }
+    except Exception:
+        pass
+    finally:
+        if os.path.isfile(tmp_out):
+            try:
+                os.remove(tmp_out)
+            except Exception:
+                pass
+
+    return {"trimmed": False, "trim_start": 0.0, "duration": dur, "reason": "fallback_full"}

@@ -134,6 +134,8 @@ class Settings:
     VISUAL_WEIGHT: float = _env_float("VISUAL_WEIGHT", 0.20)
     TRIGGER_SCORE_THRESHOLD: float = _env_float("TRIGGER_SCORE_THRESHOLD", 70.0)
     CLIP_DURATION_SEC: int = _env_int("CLIP_DURATION_SEC", 45)
+    AUTO_TRIM_ENABLED: bool = _env_bool("AUTO_TRIM_ENABLED", True)
+    MIN_CLIP_DURATION_SEC: int = _env_int("MIN_CLIP_DURATION_SEC", 22)
     POST_TRIGGER_DELAY_SEC: int = _env_int("POST_TRIGGER_DELAY_SEC", 4)
     CLIP_COOLDOWN_SEC: int = _env_int("CLIP_COOLDOWN_SEC", 60)
     VISUAL_EVAL_INTERVAL_SEC: int = _env_int("VISUAL_EVAL_INTERVAL_SEC", 4)
