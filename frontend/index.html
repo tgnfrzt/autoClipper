@@ -1,0 +1,1353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark light" />
+  <title>GTA VI AI AutoClipper — Live Radar & Discord Publisher</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090d16;
+      --surface: #111827;
+      --surface-2: #182235;
+      --border: #26334d;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --green: #10b981;
+      --amber: #f59e0b;
+      --red: #ef4444;
+      --cyan: #06b6d4;
+      --pink: #ec4899;
+      accent-color: var(--accent);
+      scrollbar-color: #475569 #0f172a;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    .app-shell {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 1rem 1.25rem 3rem;
+    }
+
+    header.topbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .brand p {
+      margin: 0.2rem 0 0;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .status-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0.35rem 0.75rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .dot.ok { background: var(--green); }
+    .dot.warn { background: var(--amber); }
+    .dot.err { background: var(--red); }
+
+    /* Accessible single-row tablist */
+    .tablist {
+      display: flex;
+      overflow-x: auto;
+      gap: 0.5rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 1rem;
+    }
+    .tablist [role="tab"] {
+      position: relative;
+      flex: none;
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      padding: 0.75rem 1.15rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .tablist [role="tab"]:hover { color: var(--text); }
+    .tablist [role="tab"][aria-selected="true"] {
+      color: var(--text);
+    }
+    .tablist [role="tab"][aria-selected="true"]::after {
+      content: "";
+      position: absolute;
+      inset: auto 0 0;
+      border-block-end: 3px solid var(--accent);
+    }
+
+    [role="tabpanel"] .panel-body {
+      display: flex;
+      flex-direction: column;
+      gap: 1.1rem;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1.1rem 1.25rem;
+    }
+    .card h2, .card h3 {
+      margin: 0 0 0.75rem;
+      font-size: 1.05rem;
+    }
+
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 0.8rem;
+    }
+    .kpi {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+    }
+    .kpi-label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+    .kpi-val {
+      font-size: 1.35rem;
+      font-weight: 700;
+      margin-top: 0.15rem;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .toolbar-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      align-items: center;
+    }
+
+    button {
+      font: inherit;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      padding: 0.55rem 0.95rem;
+      border-radius: 8px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      min-height: 40px;
+      transition: background 0.15s ease;
+    }
+    button:hover { background: #23304a; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.primary:hover { background: var(--accent-hover); }
+    button.success { background: #059669; border-color: #10b981; color: #fff; }
+    button.success:hover { background: #047857; }
+    button.danger { background: #991b1b; border-color: #dc2626; color: #fff; }
+    button.danger:hover { background: #7f1d1d; }
+    button.sm { min-height: 34px; padding: 0.35rem 0.7rem; font-size: 0.8rem; }
+
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 3px solid #60a5fa;
+      outline-offset: 2px;
+    }
+
+    input, select, textarea {
+      font: inherit;
+      font-size: max(1rem, 0.92rem);
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 0.55rem 0.75rem;
+      min-height: 42px;
+    }
+    input:user-invalid, select:user-invalid {
+      border-color: var(--red);
+    }
+
+    .stream-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+      gap: 1rem;
+    }
+    .stream-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .stream-thumb-wrap {
+      position: relative;
+      background: #050810;
+      aspect-ratio: 16 / 9;
+      overflow: hidden;
+    }
+    .stream-thumb-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .stream-badge {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      padding: 0.2rem 0.55rem;
+      border-radius: 6px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      background: rgba(9, 13, 22, 0.85);
+      border: 1px solid var(--border);
+    }
+    .stream-badge.twitch { color: #c084fc; }
+    .stream-badge.youtube { color: #f87171; }
+    .score-pill {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      padding: 0.2rem 0.55rem;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      background: rgba(9, 13, 22, 0.88);
+      border: 1px solid var(--border);
+    }
+
+    .stream-body {
+      padding: 0.85rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+      flex: 1;
+    }
+    .stream-title {
+      font-weight: 700;
+      font-size: 0.98rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .stream-meta {
+      font-size: 0.8rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .bar-row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+      font-size: 0.78rem;
+    }
+    .bar-labels {
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+    }
+    .progress-track {
+      height: 7px;
+      background: #0b1120;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.3s ease;
+    }
+    .fill-chat { background: linear-gradient(90deg, #3b82f6, #8b5cf6); }
+    .fill-vis { background: linear-gradient(90deg, #06b6d4, #10b981); }
+
+    .clips-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 1rem;
+    }
+    .clip-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.9rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+    }
+    .clip-video {
+      width: 100%;
+      max-height: 360px;
+      background: #000;
+      border-radius: 8px;
+    }
+    .clip-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 0.85rem;
+    }
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.15rem;
+      margin: 0;
+    }
+    legend {
+      padding: 0 0.5rem;
+      font-weight: 700;
+      font-size: 0.95rem;
+      color: #c7d2fe;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .field label {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .input-with-toggle {
+      display: flex;
+      gap: 0.4rem;
+    }
+    .input-with-toggle input {
+      flex: 1;
+      min-width: 0;
+    }
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-height: 40px;
+    }
+    .check-row input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      min-height: auto;
+    }
+
+    .watchlist-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.3rem 0.65rem;
+      border-radius: 999px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      font-size: 0.82rem;
+    }
+
+    .preset-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+    }
+    .preset-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 1.25rem;
+      right: 1.25rem;
+      background: #1e293b;
+      border: 1px solid var(--accent);
+      color: var(--text);
+      padding: 0.75rem 1.1rem;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      z-index: 999;
+      max-width: 420px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+    }
+    .toast[hidden] { display: none; }
+    .hint { font-size: 0.78rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <h1>⚡ GTA VI AI AutoClipper</h1>
+        <p>Multi-Stream 80% Chat Velocity + 20% Visual AI → Smart 9:16 Split → Discord &amp; Social Publisher</p>
+      </div>
+      <div class="status-pills">
+        <span class="pill"><span class="dot" id="dotEngine"></span><span id="lblEngine">Engine: ...</span></span>
+        <span class="pill"><span class="dot" id="dotVlm"></span><span id="lblVlm">VLM: ...</span></span>
+        <span class="pill"><span class="dot" id="dotDiscord"></span><span id="lblDiscord">Discord: ...</span></span>
+        <span class="pill" id="lblHw">GPU: ...</span>
+      </div>
+    </header>
+
+    <div class="tablist" role="tablist" aria-label="AutoClipper views">
+      <button type="button" role="tab" id="tab-radar" aria-selected="true" tabindex="0">📡 Live Stream Radar</button>
+      <button type="button" role="tab" id="tab-clips" aria-selected="false" tabindex="-1">🎬 Clips &amp; Queue</button>
+      <button type="button" role="tab" id="tab-config" aria-selected="false" tabindex="-1">⚙️ Configure</button>
+    </div>
+
+    <!-- TAB 1: LIVE STREAM RADAR -->
+    <section id="panel-radar" role="tabpanel" aria-labelledby="tab-radar">
+      <div class="panel-body">
+        <div class="kpi-grid">
+          <div class="kpi">
+            <div class="kpi-label">Active Buffered Streams</div>
+            <div class="kpi-val" id="kpiActive">0</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Live Chat Velocity</div>
+            <div class="kpi-val" id="kpiMps">0.0 msg/s</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Detection Mix</div>
+            <div class="kpi-val" id="kpiWeights">80% Chat / 20% Vision</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Captured Clips</div>
+            <div class="kpi-val" id="kpiClips">0</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="toolbar">
+            <form id="addStreamerForm" class="toolbar-group" style="flex:1;">
+              <label for="newStreamerTarget" class="hint" style="font-weight:700;">Add Streamer:</label>
+              <input id="newStreamerTarget" name="target" type="text" placeholder="Twitch name (e.g. kaicenat) or YouTube live URL" autocorrect="off" autocapitalize="none" spellcheck="false" style="min-width:290px;flex:1;max-width:460px;" required />
+              <select id="newStreamerPlatform" name="platform" aria-label="Platform">
+                <option value="auto">Auto-Detect</option>
+                <option value="twitch">Twitch</option>
+                <option value="youtube">YouTube Live</option>
+              </select>
+              <button type="submit" class="primary">➕ Watch Streamer</button>
+            </form>
+            <div class="toolbar-group">
+              <button type="button" id="btnDiscoverNow">🔍 Discover Live Streams</button>
+              <button type="button" id="btnToggleEngine" class="success">⏸ Pause Engine</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="stream-grid" id="streamGrid">
+          <div class="card"><p class="hint">Discovering live streams and initializing circular ring buffers...</p></div>
+        </div>
+
+        <div class="card">
+          <h3>🎯 Tracked Watchlist (Popular Presets + Manual)</h3>
+          <div class="watchlist-chips" id="watchlistChips"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: CLIPS & QUEUE -->
+    <section id="panel-clips" role="tabpanel" aria-labelledby="tab-clips" hidden>
+      <div class="panel-body">
+        <div class="card toolbar">
+          <div>
+            <h2 style="margin:0;">🎬 Captured Clips &amp; Social Review Queue</h2>
+            <p class="hint" style="margin:0.2rem 0 0;">Clips are sent to Discord automatically, or review/edit/publish right here.</p>
+          </div>
+          <button type="button" id="btnRefreshClips">🔄 Refresh Clips</button>
+        </div>
+        <div class="clips-grid" id="clipsGrid"></div>
+      </div>
+    </section>
+
+    <!-- TAB 3: CONFIGURE PAGE -->
+    <section id="panel-config" role="tabpanel" aria-labelledby="tab-config" hidden>
+      <div class="panel-body">
+        <div class="card" id="autoposterImportBanner" hidden>
+          <div class="toolbar">
+            <div>
+              <h3 style="margin:0;">🔗 Existing AutoPoster Installation Detected</h3>
+              <p class="hint" style="margin:0.2rem 0 0;">Sync your YouTube OAuth, TikTok session, and Instagram Graph API credentials locally from <code>D:\AutoPoster</code>.</p>
+            </div>
+            <button type="button" id="btnImportAutoPoster" class="primary">⬇️ Import Credentials from AutoPoster</button>
+          </div>
+        </div>
+
+        <form id="settingsForm" class="panel-body">
+          <fieldset>
+            <legend>📡 Stream Discovery &amp; 80/20 Hype Trigger</legend>
+            <div class="form-grid">
+              <div class="field">
+                <label for="cfg_GAME_QUERY">Primary Game / Search Query</label>
+                <input id="cfg_GAME_QUERY" name="GAME_QUERY" type="text" />
+              </div>
+              <div class="field">
+                <label for="cfg_FALLBACK_GAME_QUERY">Fallback Game (before launch / offline)</label>
+                <input id="cfg_FALLBACK_GAME_QUERY" name="FALLBACK_GAME_QUERY" type="text" />
+              </div>
+              <div class="field">
+                <label for="cfg_MAX_CONCURRENT_STREAMS">Max Concurrent Buffered Streams</label>
+                <input id="cfg_MAX_CONCURRENT_STREAMS" name="MAX_CONCURRENT_STREAMS" type="number" min="1" max="40" />
+              </div>
+              <div class="field">
+                <label for="cfg_STREAM_QUALITY">Buffer Stream Quality</label>
+                <select id="cfg_STREAM_QUALITY" name="STREAM_QUALITY">
+                  <option value="720p,480p,best">720p / 480p (Recommended)</option>
+                  <option value="1080p60,720p60,720p,best">1080p / Best</option>
+                  <option value="480p,360p,best">480p (Low Bandwidth)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="cfg_CHAT_WEIGHT">Chat Weight (0.80 = 80%)</label>
+                <input id="cfg_CHAT_WEIGHT" name="CHAT_WEIGHT" type="number" step="0.05" min="0" max="1" />
+              </div>
+              <div class="field">
+                <label for="cfg_VISUAL_WEIGHT">Visual AI Weight (0.20 = 20%)</label>
+                <input id="cfg_VISUAL_WEIGHT" name="VISUAL_WEIGHT" type="number" step="0.05" min="0" max="1" />
+              </div>
+              <div class="field">
+                <label for="cfg_TRIGGER_SCORE_THRESHOLD">Trigger Score Threshold (0-100)</label>
+                <input id="cfg_TRIGGER_SCORE_THRESHOLD" name="TRIGGER_SCORE_THRESHOLD" type="number" step="1" min="20" max="100" />
+              </div>
+              <div class="field">
+                <label for="cfg_CLIP_DURATION_SEC">Clip Length (30 - 60 seconds)</label>
+                <input id="cfg_CLIP_DURATION_SEC" name="CLIP_DURATION_SEC" type="number" min="30" max="60" />
+              </div>
+              <div class="field">
+                <label for="cfg_POST_TRIGGER_DELAY_SEC">Post-Spike Delay (capture aftermath, sec)</label>
+                <input id="cfg_POST_TRIGGER_DELAY_SEC" name="POST_TRIGGER_DELAY_SEC" type="number" min="0" max="20" />
+              </div>
+              <div class="field">
+                <label for="cfg_CLIP_COOLDOWN_SEC">Per-Stream Cooldown (sec)</label>
+                <input id="cfg_CLIP_COOLDOWN_SEC" name="CLIP_COOLDOWN_SEC" type="number" min="15" max="600" />
+              </div>
+              <div class="field">
+                <label for="cfg_VISUAL_EVAL_INTERVAL_SEC">Visual Inspection Interval (sec)</label>
+                <input id="cfg_VISUAL_EVAL_INTERVAL_SEC" name="VISUAL_EVAL_INTERVAL_SEC" type="number" min="2" max="30" />
+              </div>
+              <div class="field" style="justify-content:flex-end;">
+                <label class="check-row"><input type="checkbox" id="cfg_AUTO_DISCOVER_TWITCH" name="AUTO_DISCOVER_TWITCH" /> Auto-discover Top Twitch Streams</label>
+                <label class="check-row"><input type="checkbox" id="cfg_AUTO_DISCOVER_YOUTUBE" name="AUTO_DISCOVER_YOUTUBE" /> Auto-discover Top YouTube Live Streams</label>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>🧠 Local Vision AI Model (20% Visual Evaluation — GTX 1650 Ready)</legend>
+            <div class="form-grid">
+              <div class="field">
+                <label for="cfg_VLM_PROVIDER">Vision Engine Provider</label>
+                <select id="cfg_VLM_PROVIDER" name="VLM_PROVIDER">
+                  <option value="llamacpp">Local llama.cpp Server (Recommended)</option>
+                  <option value="openai">External OpenAI-Compatible / Ollama / Gemini</option>
+                  <option value="opencv_only">Ultra-Light OpenCV Only (0 VRAM)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="cfg_VLM_API_URL">Vision API Base URL</label>
+                <input id="cfg_VLM_API_URL" name="VLM_API_URL" type="url" autocorrect="off" autocapitalize="none" spellcheck="false" />
+              </div>
+              <div class="field">
+                <label for="cfg_VLM_MODEL_NAME">Model Name / Alias</label>
+                <input id="cfg_VLM_MODEL_NAME" name="VLM_MODEL_NAME" type="text" autocorrect="off" autocapitalize="none" spellcheck="false" />
+              </div>
+              <div class="field">
+                <label for="cfg_LLAMA_SERVER_EXE">llama-server.exe Path</label>
+                <input id="cfg_LLAMA_SERVER_EXE" name="LLAMA_SERVER_EXE" type="text" autocorrect="off" autocapitalize="none" spellcheck="false" />
+              </div>
+              <div class="field">
+                <label for="cfg_VLM_API_KEY">API Key (Optional for external APIs)</label>
+                <div class="input-with-toggle">
+                  <input id="cfg_VLM_API_KEY" name="VLM_API_KEY" type="password" autocomplete="off" />
+                  <button type="button" class="sm toggle-secret" data-target="cfg_VLM_API_KEY" aria-pressed="false">Show</button>
+                </div>
+              </div>
+              <div class="field" style="justify-content:flex-end;">
+                <label class="check-row"><input type="checkbox" id="cfg_VLM_AUTO_START" name="VLM_AUTO_START" /> Auto-start local VLM on boot</label>
+              </div>
+            </div>
+            <div class="toolbar-group" style="margin-top:0.85rem;">
+              <button type="button" id="btnVlmStart" class="success">▶ Start Local VLM</button>
+              <button type="button" id="btnVlmStop" class="danger">■ Stop Local VLM</button>
+              <button type="button" id="btnTestVision">🧪 Test Vision AI Now</button>
+              <span class="hint" id="vlmStatusLine">Checking VLM status...</span>
+            </div>
+            <div class="preset-grid" id="vlmPresetGrid"></div>
+          </fieldset>
+
+          <fieldset>
+            <legend>📱 Video Formatting — Smart 9:16 Gaming Split</legend>
+            <div class="form-grid">
+              <div class="field">
+                <label for="cfg_VIDEO_FORMAT_MODE">Output Format Mode</label>
+                <select id="cfg_VIDEO_FORMAT_MODE" name="VIDEO_FORMAT_MODE">
+                  <option value="smart_gaming_split">Smart 9:16 Gaming Split (Facecam Top + Gameplay Bottom)</option>
+                  <option value="blurred_9_16">9:16 Blurred Background (AutoPoster Classic)</option>
+                  <option value="original_16_9">Original 16:9 Horizontal</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="cfg_FACECAM_POSITION">Facecam Location</label>
+                <select id="cfg_FACECAM_POSITION" name="FACECAM_POSITION">
+                  <option value="auto">Auto-Detect Corner Facecam (OpenCV)</option>
+                  <option value="top_left">Top-Left Corner</option>
+                  <option value="top_right">Top-Right Corner</option>
+                  <option value="bottom_left">Bottom-Left Corner</option>
+                  <option value="bottom_right">Bottom-Right Corner</option>
+                  <option value="none">No Facecam (Zoomed Gameplay)</option>
+                </select>
+              </div>
+              <div class="field" style="justify-content:flex-end;">
+                <label class="check-row"><input type="checkbox" id="cfg_ANTI_FINGERPRINT" name="ANTI_FINGERPRINT" /> Enable Subtle Anti-Fingerprinting</label>
+              </div>
+              <div class="field">
+                <label for="watermarkFileInput">Optional Channel Watermark (PNG)</label>
+                <div class="input-with-toggle">
+                  <input id="watermarkFileInput" type="file" accept="image/png" />
+                  <button type="button" id="btnUploadWatermark" class="sm">Upload</button>
+                </div>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>🤖 Discord Review Bot (Reaction-to-Publish)</legend>
+            <div class="form-grid">
+              <div class="field">
+                <label for="cfg_DISCORD_BOT_TOKEN">Discord Bot Token</label>
+                <div class="input-with-toggle">
+                  <input id="cfg_DISCORD_BOT_TOKEN" name="DISCORD_BOT_TOKEN" type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+                  <button type="button" class="sm toggle-secret" data-target="cfg_DISCORD_BOT_TOKEN" aria-pressed="false">Show</button>
+                </div>
+              </div>
+              <div class="field">
+                <label for="cfg_DISCORD_CHANNEL_ID">Target Channel ID</label>
+                <input id="cfg_DISCORD_CHANNEL_ID" name="DISCORD_CHANNEL_ID" type="text" inputmode="numeric" autocorrect="off" spellcheck="false" />
+              </div>
+              <div class="field">
+                <label for="cfg_DISCORD_USER_ID">Target User ID (Optional DM)</label>
+                <input id="cfg_DISCORD_USER_ID" name="DISCORD_USER_ID" type="text" inputmode="numeric" autocorrect="off" spellcheck="false" />
+              </div>
+              <div class="field">
+                <label for="cfg_DISCORD_COMMAND_PREFIX">Bot Command Prefix</label>
+                <input id="cfg_DISCORD_COMMAND_PREFIX" name="DISCORD_COMMAND_PREFIX" type="text" maxlength="4" />
+              </div>
+            </div>
+            <div class="toolbar-group" style="margin-top:0.75rem;">
+              <label class="check-row"><input type="checkbox" id="cfg_AUTO_DELETE_ON_REJECT" name="AUTO_DELETE_ON_REJECT" /> Auto-delete local files when ❌ rejected</label>
+              <button type="button" id="btnTestDiscord">📨 Send Test Message to Discord</button>
+              <span class="hint">Reactions: ✅ Post All • ▶️ YouTube • 🎵 TikTok • 📸 Instagram • ❌ Delete</span>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>🚀 Social Publishing Credentials (YouTube Shorts, TikTok, Instagram Reels)</legend>
+            <div class="form-grid">
+              <div class="field">
+                <label for="cfg_YOUTUBE_DEFAULT_PRIVACY">YouTube Privacy</label>
+                <select id="cfg_YOUTUBE_DEFAULT_PRIVACY" name="YOUTUBE_DEFAULT_PRIVACY">
+                  <option value="public">Public</option>
+                  <option value="unlisted">Unlisted</option>
+                  <option value="private">Private</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="ytSecretFileInput">YouTube OAuth client_secret.json</label>
+                <div class="input-with-toggle">
+                  <input id="ytSecretFileInput" type="file" accept=".json" />
+                  <button type="button" id="btnUploadYtSecret" class="sm">Upload</button>
+                </div>
+              </div>
+              <div class="field" style="justify-content:flex-end;">
+                <div class="toolbar-group">
+                  <button type="button" id="btnAuthYoutube" class="primary sm">🔑 Authorize YouTube</button>
+                  <button type="button" id="btnTestYoutube" class="sm">Check YouTube</button>
+                </div>
+                <span class="hint" id="ytStatusHint">Checking...</span>
+              </div>
+              <div class="field">
+                <label for="cfg_DEFAULT_YOUTUBE_CAPTION">Default YouTube Caption</label>
+                <input id="cfg_DEFAULT_YOUTUBE_CAPTION" name="DEFAULT_YOUTUBE_CAPTION" type="text" />
+              </div>
+
+              <div class="field">
+                <label for="cfg_TIKTOK_SESSION_ID">TikTok sessionid Cookie</label>
+                <div class="input-with-toggle">
+                  <input id="cfg_TIKTOK_SESSION_ID" name="TIKTOK_SESSION_ID" type="password" autocomplete="off" />
+                  <button type="button" class="sm toggle-secret" data-target="cfg_TIKTOK_SESSION_ID" aria-pressed="false">Show</button>
+                </div>
+              </div>
+              <div class="field">
+                <label for="ttCookiesFileInput">Or Upload tiktok_cookies.txt</label>
+                <div class="input-with-toggle">
+                  <input id="ttCookiesFileInput" type="file" accept=".txt" />
+                  <button type="button" id="btnUploadTtCookies" class="sm">Upload</button>
+                </div>
+              </div>
+              <div class="field">
+                <label for="cfg_DEFAULT_TIKTOK_CAPTION">Default TikTok Caption</label>
+                <input id="cfg_DEFAULT_TIKTOK_CAPTION" name="DEFAULT_TIKTOK_CAPTION" type="text" />
+              </div>
+              <div class="field" style="justify-content:flex-end;">
+                <button type="button" id="btnTestTiktok" class="sm">Check TikTok Session</button>
+                <span class="hint" id="ttStatusHint">Checking...</span>
+              </div>
+
+              <div class="field">
+                <label for="cfg_INSTAGRAM_BUSINESS_ID">Instagram Business Account ID</label>
+                <input id="cfg_INSTAGRAM_BUSINESS_ID" name="INSTAGRAM_BUSINESS_ID" type="text" inputmode="numeric" autocorrect="off" spellcheck="false" />
+              </div>
+              <div class="field">
+                <label for="cfg_PAGE_ACCESS_TOKEN">Meta Page Access Token</label>
+                <div class="input-with-toggle">
+                  <input id="cfg_PAGE_ACCESS_TOKEN" name="PAGE_ACCESS_TOKEN" type="password" autocomplete="off" />
+                  <button type="button" class="sm toggle-secret" data-target="cfg_PAGE_ACCESS_TOKEN" aria-pressed="false">Show</button>
+                </div>
+              </div>
+              <div class="field">
+                <label for="cfg_REMOTE_HOSTING_URL">Temporary Public Relay URL (for Reels)</label>
+                <input id="cfg_REMOTE_HOSTING_URL" name="REMOTE_HOSTING_URL" type="url" autocorrect="off" autocapitalize="none" spellcheck="false" />
+              </div>
+              <div class="field" style="justify-content:flex-end;">
+                <div class="toolbar-group">
+                  <button type="button" id="btnTestInstagram" class="sm">Check IG API</button>
+                  <button type="button" id="btnTestHosting" class="sm">Check Relay</button>
+                </div>
+                <span class="hint" id="igStatusHint">Checking...</span>
+              </div>
+            </div>
+          </fieldset>
+
+          <div class="toolbar" style="justify-content:flex-end;">
+            <button type="submit" id="btnSaveSettings" class="primary">💾 Save All Configuration</button>
+          </div>
+        </form>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <script>
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    const panels = [...document.querySelectorAll('[role="tabpanel"]')];
+
+    function activateTab(tab) {
+      tabs.forEach((t, idx) => {
+        const selected = t === tab;
+        t.setAttribute('aria-selected', selected ? 'true' : 'false');
+        t.tabIndex = selected ? 0 : -1;
+        panels[idx].hidden = !selected;
+      });
+    }
+
+    tabs.forEach((tab, idx) => {
+      tab.addEventListener('click', () => activateTab(tab));
+      tab.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight') {
+          const next = tabs[(idx + 1) % tabs.length];
+          next.focus();
+          activateTab(next);
+        } else if (e.key === 'ArrowLeft') {
+          const prev = tabs[(idx - 1 + tabs.length) % tabs.length];
+          prev.focus();
+          activateTab(prev);
+        }
+      });
+    });
+
+    let toastTimer = null;
+    function showToast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { el.hidden = true; }, 4500);
+    }
+
+    async function api(url, opts = {}) {
+      const res = await fetch(url, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+      return data;
+    }
+
+    // Secret reveal buttons
+    document.querySelectorAll('.toggle-secret').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const input = document.getElementById(btn.dataset.target);
+        const showing = input.type === 'text';
+        input.type = showing ? 'password' : 'text';
+        btn.setAttribute('aria-pressed', showing ? 'false' : 'true');
+        btn.textContent = showing ? 'Show' : 'Hide';
+      });
+    });
+
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s ?? '';
+      return d.innerHTML;
+    }
+
+    async function refreshRadar() {
+      try {
+        const [dash, watch, clipsData, aiData] = await Promise.all([
+          api('/api/streams/dashboard'),
+          api('/api/streams/watchlist'),
+          api('/api/clips?limit=50'),
+          api('/api/ai/status'),
+        ]);
+
+        // Header status pills
+        const dotEng = document.getElementById('dotEngine');
+        const lblEng = document.getElementById('lblEngine');
+        dotEng.className = 'dot ' + (dash.engine_enabled ? 'ok' : 'warn');
+        lblEng.textContent = dash.engine_enabled ? `Watching (${dash.active_count})` : 'Paused';
+
+        const btnToggle = document.getElementById('btnToggleEngine');
+        btnToggle.textContent = dash.engine_enabled ? '⏸ Pause Engine' : '▶ Resume Engine';
+        btnToggle.className = dash.engine_enabled ? 'danger' : 'success';
+        btnToggle.dataset.enabled = dash.engine_enabled ? '1' : '0';
+
+        const vlm = aiData.vlm;
+        const hw = aiData.hardware;
+        document.getElementById('dotVlm').className = 'dot ' + (vlm.healthy ? 'ok' : 'warn');
+        document.getElementById('lblVlm').textContent = vlm.healthy
+          ? `VLM: ${vlm.model_name.split(' ')[0]}`
+          : `VLM: ${vlm.provider === 'opencv_only' ? 'OpenCV' : 'Starting/Offline'}`;
+        document.getElementById('lblHw').textContent = `VRAM ${hw.vram_used_mb}/${hw.vram_total_mb}MB • RAM ${hw.ram_used_gb}/${hw.ram_total_gb}GB`;
+
+        document.getElementById('kpiActive').textContent = dash.active_count;
+        document.getElementById('kpiMps').textContent = `${dash.total_chat_mps} msg/s`;
+        document.getElementById('kpiClips').textContent = clipsData.clips.length;
+
+        // VLM preset cards
+        renderVlmPresets(vlm);
+
+        // Stream grid
+        const grid = document.getElementById('streamGrid');
+        if (!dash.streams.length) {
+          grid.innerHTML = `<div class="card"><p class="hint">No live streams buffered yet. Click <strong>Discover Live Streams</strong> or add a live Twitch/YouTube streamer above.</p></div>`;
+        } else {
+          grid.innerHTML = dash.streams.map((s) => `
+            <article class="stream-card">
+              <div class="stream-thumb-wrap">
+                ${s.thumb_url ? `<img src="${esc(s.thumb_url)}" alt="${esc(s.display_name)} live frame" />` : `<div style="display:grid;place-items:center;height:100%;color:var(--muted);font-size:0.85rem;">Buffering ${s.buffered_sec}s...</div>`}
+                <span class="stream-badge ${esc(s.platform)}">${esc(s.platform.toUpperCase())} • ${Number(s.viewer_count || 0).toLocaleString()}</span>
+                <span class="score-pill" style="color:${s.combined_score >= 65 ? '#34d399' : '#e2e8f0'}">Score ${s.combined_score}/100</span>
+              </div>
+              <div class="stream-body">
+                <div class="stream-title">
+                  <span>${esc(s.display_name)}</span>
+                  <span class="hint">${s.buffered_sec}s buf</span>
+                </div>
+                <div class="stream-meta" title="${esc(s.title)}">${esc(s.title || s.game_name || 'Live Stream')}</div>
+                <div class="bar-row">
+                  <div class="bar-labels">
+                    <span>Chat Hype (80%): ${s.chat_mps} msg/s</span>
+                    <span>${s.chat_score}/100</span>
+                  </div>
+                  <div class="progress-track"><div class="progress-fill fill-chat" style="width:${Math.min(100, s.chat_score)}%"></div></div>
+                </div>
+                <div class="bar-row">
+                  <div class="bar-labels">
+                    <span>Vision AI (20%): ${esc(s.visual_event)}</span>
+                    <span>${s.visual_score}/100</span>
+                  </div>
+                  <div class="progress-track"><div class="progress-fill fill-vis" style="width:${Math.min(100, s.visual_score)}%"></div></div>
+                </div>
+                <div class="hint">${esc(s.visual_summary || (s.top_keywords.length ? 'Keywords: ' + s.top_keywords.join(', ') : 'Waiting for frame eval...'))}</div>
+                <div class="toolbar-group" style="margin-top:auto;padding-top:0.35rem;">
+                  <button type="button" class="primary sm" data-clip-stream="${esc(s.id)}">⚡ Clip Now</button>
+                  <a href="${esc(s.url)}" target="_blank" rel="noreferrer" class="hint" style="margin-left:auto;">Open Stream ↗</a>
+                </div>
+              </div>
+            </article>
+          `).join('');
+
+          grid.querySelectorAll('[data-clip-stream]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+              btn.disabled = true;
+              try {
+                const res = await api(`/api/streams/${encodeURIComponent(btn.dataset.clipStream)}/clip-now`, { method: 'POST' });
+                showToast(`Clipped ${res.clip.streamer_name}! Sent to Discord.`);
+                refreshClips();
+              } catch (err) {
+                showToast(err.message);
+              } finally {
+                btn.disabled = false;
+              }
+            });
+          });
+        }
+
+        // Watchlist chips
+        const chips = document.getElementById('watchlistChips');
+        chips.innerHTML = watch.streamers.map((w) => `
+          <span class="chip">
+            <span>${w.is_live ? '🟢' : '⚫'} <strong>${esc(w.display_name)}</strong> (${esc(w.platform)})</span>
+            <button type="button" class="sm" data-toggle-watch="${esc(w.id)}" data-enabled="${w.enabled ? '1' : '0'}">${w.enabled ? 'On' : 'Off'}</button>
+            <button type="button" class="sm" data-del-watch="${esc(w.id)}" aria-label="Remove ${esc(w.display_name)}">✕</button>
+          </span>
+        `).join('');
+
+        chips.querySelectorAll('[data-toggle-watch]').forEach((b) => {
+          b.addEventListener('click', async () => {
+            const next = b.dataset.enabled !== '1';
+            await api(`/api/streams/watchlist/${encodeURIComponent(b.dataset.toggleWatch)}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ enabled: next }),
+            });
+            refreshRadar();
+          });
+        });
+        chips.querySelectorAll('[data-del-watch]').forEach((b) => {
+          b.addEventListener('click', async () => {
+            await api(`/api/streams/watchlist/${encodeURIComponent(b.dataset.delWatch)}`, { method: 'DELETE' });
+            refreshRadar();
+          });
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    function renderVlmPresets(vlm) {
+      const line = document.getElementById('vlmStatusLine');
+      if (vlm.download && vlm.download.active) {
+        line.textContent = `Downloading ${vlm.download.file}: ${vlm.download.progress_pct}% (${vlm.download.downloaded_mb} MB)`;
+      } else if (vlm.healthy) {
+        line.textContent = `Online • ${vlm.model_name} (PID ${vlm.pid || 'External'})`;
+      } else {
+        line.textContent = vlm.last_error || 'Local VLM server stopped.';
+      }
+
+      const grid = document.getElementById('vlmPresetGrid');
+      grid.innerHTML = (vlm.presets || []).map((p) => `
+        <div class="preset-card">
+          <div class="toolbar">
+            <strong>${esc(p.name)}</strong>
+            <span class="hint">${p.is_active ? '✅ Active' : (p.installed ? 'Installed' : 'Not Downloaded')}</span>
+          </div>
+          <div class="hint">${esc(p.size_label)}</div>
+          <div class="hint">${esc(p.recommended_for)}</div>
+          <div class="toolbar-group" style="margin-top:0.35rem;">
+            ${p.installed
+              ? `<button type="button" class="sm primary" data-activate-vlm="${esc(p.id)}">${p.is_active ? 'Restart Model' : 'Activate Model'}</button>`
+              : `<button type="button" class="sm primary" data-download-vlm="${esc(p.id)}">⬇️ Download &amp; Activate</button>`}
+          </div>
+        </div>
+      `).join('');
+
+      grid.querySelectorAll('[data-download-vlm]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          const res = await api('/api/ai/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ preset_id: b.dataset.downloadVlm, activate: true }),
+          });
+          showToast(res.message);
+          refreshRadar();
+        });
+      });
+      grid.querySelectorAll('[data-activate-vlm]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          showToast('Switching Vision AI model...');
+          const res = await api('/api/ai/activate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ preset_id: b.dataset.activateVlm }),
+          });
+          showToast(res.message);
+          refreshRadar();
+        });
+      });
+    }
+
+    async function refreshClips() {
+      const data = await api('/api/clips?limit=60');
+      const grid = document.getElementById('clipsGrid');
+      if (!data.clips.length) {
+        grid.innerHTML = `<div class="card"><p class="hint">No clips captured yet. Once a watched stream spikes (80% chat + 20% vision) or you click <strong>Clip Now</strong>, clips appear here and in Discord.</p></div>`;
+        return;
+      }
+      grid.innerHTML = data.clips.map((c) => `
+        <article class="clip-card">
+          <div class="toolbar">
+            <strong>${esc(c.streamer_name)} (${esc(c.platform.toUpperCase())})</strong>
+            <span class="hint">Score ${c.combined_score} • ${c.duration_sec}s • <strong>${esc(c.status.toUpperCase())}</strong></span>
+          </div>
+          <video class="clip-video" controls preload="metadata" src="/api/clips/${esc(c.id)}/video?t=${Date.now()}"></video>
+          <div class="field">
+            <label>Title</label>
+            <input type="text" value="${esc(c.ai_title)}" data-title-for="${esc(c.id)}" />
+          </div>
+          <div class="field">
+            <label>Caption</label>
+            <input type="text" value="${esc(c.ai_caption)}" data-caption-for="${esc(c.id)}" />
+          </div>
+          <div class="hint">${esc(c.ai_summary)}</div>
+          <div class="clip-actions">
+            <button type="button" class="sm" data-save-clip="${esc(c.id)}">💾 Save Text</button>
+            <button type="button" class="sm" data-render-clip="${esc(c.id)}">📐 Render 9:16 Split</button>
+            <button type="button" class="sm success" data-pub-clip="${esc(c.id)}" data-plat="all">✅ Post All</button>
+            <button type="button" class="sm" data-pub-clip="${esc(c.id)}" data-plat="youtube_shorts">▶️ YT</button>
+            <button type="button" class="sm" data-pub-clip="${esc(c.id)}" data-plat="tiktok">🎵 TT</button>
+            <button type="button" class="sm" data-pub-clip="${esc(c.id)}" data-plat="instagram">📸 IG</button>
+            <button type="button" class="sm" data-discord-clip="${esc(c.id)}">📨 Discord</button>
+            <button type="button" class="sm danger" data-del-clip="${esc(c.id)}">❌</button>
+          </div>
+          ${(c.posts || []).length ? `<div class="hint">${c.posts.map((p) => `${esc(p.platform)}: ${esc(p.status)} ${p.post_url ? `<a href="${esc(p.post_url)}" target="_blank">Link</a>` : esc(p.error_message)}`).join(' | ')}</div>` : ''}
+        </article>
+      `).join('');
+
+      grid.querySelectorAll('[data-save-clip]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          const cid = b.dataset.saveClip;
+          const ai_title = grid.querySelector(`[data-title-for="${cid}"]`).value;
+          const ai_caption = grid.querySelector(`[data-caption-for="${cid}"]`).value;
+          await api(`/api/clips/${encodeURIComponent(cid)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ai_title, ai_caption }),
+          });
+          showToast('Saved clip title & caption.');
+        });
+      });
+
+      grid.querySelectorAll('[data-render-clip]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          b.disabled = true;
+          try {
+            const res = await api(`/api/clips/${encodeURIComponent(b.dataset.renderClip)}/render`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({}),
+            });
+            showToast(`Rendered ${res.mode} (${res.width}x${res.height}, facecam: ${res.facecam_used})`);
+            refreshClips();
+          } catch (err) {
+            showToast(err.message);
+          } finally {
+            b.disabled = false;
+          }
+        });
+      });
+
+      grid.querySelectorAll('[data-pub-clip]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          b.disabled = true;
+          showToast(`Rendering & publishing to ${b.dataset.plat}...`);
+          try {
+            const res = await api(`/api/clips/${encodeURIComponent(b.dataset.pubClip)}/publish`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ platforms: [b.dataset.plat] }),
+            });
+            showToast(res.any_success ? 'Published successfully!' : 'Publish completed with errors (see card).');
+            refreshClips();
+          } catch (err) {
+            showToast(err.message);
+          } finally {
+            b.disabled = false;
+          }
+        });
+      });
+
+      grid.querySelectorAll('[data-discord-clip]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          try {
+            await api(`/api/clips/${encodeURIComponent(b.dataset.discordClip)}/send-discord`, { method: 'POST' });
+            showToast('Sent clip to Discord for reaction review!');
+          } catch (err) {
+            showToast(err.message);
+          }
+        });
+      });
+
+      grid.querySelectorAll('[data-del-clip]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          await api(`/api/clips/${encodeURIComponent(b.dataset.delClip)}`, { method: 'DELETE' });
+          showToast('Clip deleted.');
+          refreshClips();
+        });
+      });
+    }
+
+    async function loadSettings() {
+      const cfg = await api('/api/settings');
+      document.getElementById('autoposterImportBanner').hidden = !cfg.status.autoposter_detected;
+
+      const disc = cfg.status.discord;
+      document.getElementById('dotDiscord').className = 'dot ' + (disc.connected ? 'ok' : (disc.has_token ? 'warn' : 'err'));
+      document.getElementById('lblDiscord').textContent = disc.connected
+        ? `Discord: ${disc.bot_user}`
+        : (disc.has_token ? 'Discord: Connecting/Error' : 'Discord: Not Configured');
+
+      document.getElementById('ytStatusHint').textContent = cfg.status.youtube_ready
+        ? '✅ Authorized token active'
+        : (cfg.status.youtube_has_secret ? 'Secret uploaded — click Authorize YouTube' : 'Upload client_secret.json first');
+      document.getElementById('ttStatusHint').textContent = cfg.status.tiktok_ready
+        ? '✅ TikTok credentials saved'
+        : 'Paste Session ID or upload tiktok_cookies.txt';
+      document.getElementById('igStatusHint').textContent = cfg.status.instagram_ready
+        ? '✅ Instagram Business ID, Token & Relay set'
+        : 'Fill Business ID, Page Token & Hosting Relay';
+
+      document.getElementById('kpiWeights').textContent = `${Math.round(cfg.CHAT_WEIGHT * 100)}% Chat / ${Math.round(cfg.VISUAL_WEIGHT * 100)}% Vision`;
+
+      Object.keys(cfg).forEach((k) => {
+        const el = document.getElementById(`cfg_${k}`);
+        if (!el) return;
+        if (el.type === 'checkbox') {
+          el.checked = Boolean(cfg[k]);
+        } else {
+          el.value = cfg[k] ?? '';
+        }
+      });
+    }
+
+    document.getElementById('addStreamerForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const target = document.getElementById('newStreamerTarget').value.trim();
+      const platform = document.getElementById('newStreamerPlatform').value;
+      try {
+        await api('/api/streams/watchlist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target, platform }),
+        });
+        document.getElementById('newStreamerTarget').value = '';
+        showToast(`Added ${target} to watchlist!`);
+        refreshRadar();
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+
+    document.getElementById('btnDiscoverNow').addEventListener('click', async () => {
+      showToast('Discovering live GTA streams...');
+      const res = await api('/api/streams/discover', { method: 'POST' });
+      showToast(`Found ${res.live_discovered} live streams • ${res.active_buffers} buffering`);
+      refreshRadar();
+    });
+
+    document.getElementById('btnToggleEngine').addEventListener('click', async (e) => {
+      const next = e.target.dataset.enabled !== '1';
+      await api('/api/streams/engine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next }),
+      });
+      showToast(next ? 'Engine resumed!' : 'Engine paused.');
+      refreshRadar();
+    });
+
+    document.getElementById('btnRefreshClips').addEventListener('click', refreshClips);
+
+    document.getElementById('settingsForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = {};
+      document.querySelectorAll('[id^="cfg_"]').forEach((el) => {
+        const key = el.id.replace('cfg_', '');
+        if (el.type === 'checkbox') {
+          payload[key] = el.checked;
+        } else if (el.type === 'number') {
+          payload[key] = Number(el.value);
+        } else {
+          payload[key] = el.value;
+        }
+      });
+      await api('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      showToast('Settings saved! Discord & Engine updated.');
+      loadSettings();
+      refreshRadar();
+    });
+
+    document.getElementById('btnImportAutoPoster').addEventListener('click', async () => {
+      const res = await api('/api/settings/import-autoposter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoposter_path: 'D:\\AutoPoster' }),
+      });
+      showToast(res.success ? `Imported ${res.copied_files.length} files & ${res.imported_keys.length} settings from AutoPoster!` : res.error);
+      loadSettings();
+    });
+
+    document.getElementById('btnVlmStart').addEventListener('click', async () => {
+      showToast('Starting local VLM server...');
+      const res = await api('/api/ai/start', { method: 'POST' });
+      showToast(res.message);
+      refreshRadar();
+    });
+    document.getElementById('btnVlmStop').addEventListener('click', async () => {
+      const res = await api('/api/ai/stop', { method: 'POST' });
+      showToast(res.message);
+      refreshRadar();
+    });
+    document.getElementById('btnTestVision').addEventListener('click', async () => {
+      showToast('Running vision evaluation test...');
+      const res = await api('/api/ai/test-vision', { method: 'POST' });
+      showToast(`Vision Score: ${res.evaluation.visual_score}/100 • ${res.evaluation.summary}`);
+    });
+
+    document.getElementById('btnTestDiscord').addEventListener('click', async () => {
+      const res = await api('/api/settings/discord/test', { method: 'POST' });
+      showToast(res.ok ? `Test message sent to ${res.sent_to} Discord target(s)!` : `Discord error: ${res.error}`);
+    });
+
+    document.getElementById('btnUploadWatermark').addEventListener('click', async () => {
+      const file = document.getElementById('watermarkFileInput').files[0];
+      if (!file) return showToast('Select a PNG watermark file first.');
+      const fd = new FormData();
+      fd.append('file', file);
+      await api('/api/settings/watermark/upload', { method: 'POST', body: fd });
+      showToast('Watermark uploaded!');
+    });
+
+    document.getElementById('btnUploadYtSecret').addEventListener('click', async () => {
+      const file = document.getElementById('ytSecretFileInput').files[0];
+      if (!file) return showToast('Select client_secret.json first.');
+      const fd = new FormData();
+      fd.append('file', file);
+      await api('/api/settings/youtube/upload_secret', { method: 'POST', body: fd });
+      showToast('YouTube client_secret.json uploaded!');
+      loadSettings();
+    });
+
+    document.getElementById('btnAuthYoutube').addEventListener('click', async () => {
+      const res = await api('/api/settings/youtube/auth_url');
+      if (!res.ready) return showToast(res.error);
+      window.open(res.auth_url, 'yt_oauth', 'width=540,height=680');
+    });
+
+    window.addEventListener('message', (e) => {
+      if (e.data && e.data.type === 'YOUTUBE_AUTH_SUCCESS') {
+        showToast('YouTube channel authorized!');
+        loadSettings();
+      }
+    });
+
+    document.getElementById('btnTestYoutube').addEventListener('click', async () => {
+      const res = await api('/api/settings/test_youtube', { method: 'POST' });
+      showToast(res.valid ? `YouTube Connected: ${res.channel_title}` : `YouTube Error: ${res.error}`);
+    });
+
+    document.getElementById('btnUploadTtCookies').addEventListener('click', async () => {
+      const file = document.getElementById('ttCookiesFileInput').files[0];
+      if (!file) return showToast('Select tiktok_cookies.txt first.');
+      const fd = new FormData();
+      fd.append('file', file);
+      await api('/api/settings/tiktok/cookies/upload', { method: 'POST', body: fd });
+      showToast('TikTok cookies uploaded!');
+      loadSettings();
+    });
+
+    document.getElementById('btnTestTiktok').addEventListener('click', async () => {
+      const session_id = document.getElementById('cfg_TIKTOK_SESSION_ID').value;
+      const res = await api('/api/settings/test_tiktok', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id }),
+      });
+      showToast(res.valid ? `TikTok OK: ${res.display_name}` : `TikTok Error: ${res.error}`);
+    });
+
+    document.getElementById('btnTestInstagram').addEventListener('click', async () => {
+      const business_id = document.getElementById('cfg_INSTAGRAM_BUSINESS_ID').value;
+      const access_token = document.getElementById('cfg_PAGE_ACCESS_TOKEN').value;
+      const res = await api('/api/settings/test_instagram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ business_id, access_token }),
+      });
+      showToast(res.valid ? `Instagram OK: @${res.username || res.name}` : `Instagram Error: ${res.error}`);
+    });
+
+    document.getElementById('btnTestHosting').addEventListener('click', async () => {
+      const hosting_url = document.getElementById('cfg_REMOTE_HOSTING_URL').value;
+      const res = await api('/api/settings/test_hosting', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hosting_url }),
+      });
+      showToast(res.valid ? res.message : `Relay Error: ${res.error}`);
+    });
+
+    loadSettings();
+    refreshRadar();
+    refreshClips();
+    setInterval(refreshRadar, 3500);
+    setInterval(loadSettings, 15000);
+  </script>
+</body>
+</html>

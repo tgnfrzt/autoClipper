@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Environment & Secrets (NEVER commit personal credentials)
+.env
+.env.local
+.env.*.local
+*secret*.json
+*token*.json
+*cookies*.txt
+.youtube_pkce.json
+storage/data/
+!storage/data/.gitkeep
+
+# Runtime storage, buffers, clips, databases & models
+storage/
+models/
+*.db
+*.sqlite
+*.sqlite3
+*.gguf
+*.bin
+*.onnx
+*.mp4
+*.mkv
+*.mov
+*.ts
+*.m4a
+*.jpg
+*.jpeg
+*.png
+*.log
+
+# OS & IDEs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
