@@ -184,7 +184,11 @@ class DiscordClipBotService:
                             "fields": [
                                 {
                                     "name": "📱 Mobile Reachable Base URL",
-                                    "value": f"`{base}` (Tap the buttons below to test on your phone)",
+                                    "value": (
+                                        f"`{base}`\n\n"
+                                        f"🚀 **[  ✅ TEST POST ALL  ]({base}/)**\n\n"
+                                        f"📱 **[  🎬 TEST MOBILE REVIEW PLAYER  ]({base}/)**"
+                                    ),
                                     "inline": False,
                                 }
                             ],
@@ -395,9 +399,19 @@ class DiscordClipBotService:
                 "inline": False,
             }
         )
+        base = get_reachable_base_url()
+        clip_id = clip["id"]
+        action_buttons_md = (
+            f"🚀 **[  ✅ POST ALL PLATFORMS  ]({base}/api/clips/{clip_id}/quick-action?action=all)**\n\n"
+            f"▶️ **[  YouTube Shorts  ]({base}/api/clips/{clip_id}/quick-action?action=youtube_shorts)**  •  "
+            f"🎵 **[  TikTok  ]({base}/api/clips/{clip_id}/quick-action?action=tiktok)**  •  "
+            f"📸 **[  Instagram  ]({base}/api/clips/{clip_id}/quick-action?action=instagram)**\n\n"
+            f"🗑️ **[  ❌ Reject & Delete  ]({base}/api/clips/{clip_id}/quick-action?action=reject)**\n\n"
+            f"📱 **[  🎬 OPEN MOBILE REVIEW PLAYER  ]({base}/api/clips/{clip_id}/review)**"
+        )
         fields.append({
-            "name": "⚡ Interactive Actions",
-            "value": "Tap the **Buttons below** to Post All, publish to specific platforms, or open the **📱 Mobile Review Player** directly on your phone!",
+            "name": "⚡ 1-Click Phone Actions",
+            "value": action_buttons_md,
             "inline": False,
         })
 
@@ -415,6 +429,8 @@ class DiscordClipBotService:
         attach_path = await asyncio.to_thread(ensure_discord_attachable_mp4, raw_path)
         embed_dict = self._build_clip_embed_dict(clip)
         components = self._build_clip_components(clip)
+        base = get_reachable_base_url()
+        clip_id = clip["id"]
 
         first_msg_id: Optional[str] = None
         first_ch_id: Optional[str] = None
@@ -422,10 +438,16 @@ class DiscordClipBotService:
         # 1. Discord Webhook (Primary / Zero-Bot Setup)
         if self.has_webhook():
             try:
+                content_text = (
+                    f"🎬 **New Clip Ready: {clip.get('overlay_caption') or clip['streamer_name']}**\n"
+                    f"> 🚀 **[  ✅ POST ALL  ]({base}/api/clips/{clip_id}/quick-action?action=all)**  •  "
+                    f"📱 **[  🎬 MOBILE REVIEW  ]({base}/api/clips/{clip_id}/review)**  •  "
+                    f"❌ **[  REJECT  ]({base}/api/clips/{clip_id}/quick-action?action=reject)**"
+                )
                 payload_json = json.dumps(
                     {
                         "username": "GTA VI AI AutoClipper",
-                        "content": f"🎬 **New Clip Ready:** {clip.get('overlay_caption') or clip['streamer_name']}",
+                        "content": content_text,
                         "embeds": [embed_dict],
                         "components": components,
                     }
