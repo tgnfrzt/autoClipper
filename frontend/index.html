@@ -918,7 +918,13 @@
                 <input id="cfg_DISCORD_WEBHOOK_URL" name="DISCORD_WEBHOOK_URL" type="password" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
                 <button type="button" class="sm toggle-secret" data-target="cfg_DISCORD_WEBHOOK_URL" aria-pressed="false">Show</button>
               </div>
-              <span class="hint">In Discord: Channel Settings (⚙️) → Integrations → Webhooks → New Webhook → Copy Webhook URL. Clips include 1-click Post All / YouTube / TikTok / Instagram / Reject links!</span>
+              <span class="hint">In Discord: Channel Settings (⚙️) → Integrations → Webhooks → New Webhook → Copy Webhook URL. Clips include interactive Post All / YouTube / TikTok / Instagram / Reject buttons!</span>
+            </div>
+            <div class="field" style="margin-bottom:0.85rem;">
+              <label for="cfg_DISCORD_BASE_URL">Mobile Review Base URL (Reachable by Phone)</label>
+              <input id="cfg_DISCORD_BASE_URL" name="DISCORD_BASE_URL" type="text" placeholder="Auto-detected LAN (e.g. http://192.168.0.175:17430)" autocomplete="off" spellcheck="false" />
+              <div id="discordUrlHelperPills" style="margin-top:0.35rem; display:flex; gap:0.4rem; flex-wrap:wrap; font-size:0.8rem;"></div>
+              <span class="hint">When you tap interactive buttons on Discord mobile, they connect to this address. Leave blank to auto-use your home Wi-Fi IP (works on any phone on same Wi-Fi). Set to Tailscale or public tunnel when reviewing away from home.</span>
             </div>
             <div class="form-grid">
               <div class="field">
@@ -1705,6 +1711,17 @@
         if (el.type === 'checkbox') el.checked = Boolean(cfg[k]);
         else el.value = cfg[k] ?? '';
       });
+
+      const pillsContainer = document.getElementById('discordUrlHelperPills');
+      if (pillsContainer && cfg.status && cfg.status.network_endpoints) {
+        const eps = cfg.status.network_endpoints;
+        const currentActive = cfg.status.reachable_base_url || '';
+        pillsContainer.innerHTML = Object.entries(eps).map(([name, url]) => {
+          const isSel = (cfg.DISCORD_BASE_URL || currentActive) === url;
+          const label = name === 'lan' ? '🏠 Home Wi-Fi' : (name === 'tailscale' ? '🌐 Tailscale' : '💻 Localhost');
+          return `<button type="button" class="sm" style="font-size:0.75rem; padding:2px 8px; border-radius:6px; background:${isSel ? '#2563eb' : '#1e293b'}; color:#fff; border:1px solid #334155; cursor:pointer;" onclick="document.getElementById('cfg_DISCORD_BASE_URL').value='${url}'; showToast('Selected ' + '${name.toUpperCase()}' + ' URL!');">${label}: ${url}</button>`;
+        }).join('');
+      }
     }
 
     document.getElementById('addStreamerForm').addEventListener('submit', async (e) => {

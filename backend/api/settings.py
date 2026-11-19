@@ -13,6 +13,8 @@ from pydantic import BaseModel
 
 from backend.core.config import (
     DATA_DIR,
+    get_network_endpoints,
+    get_reachable_base_url,
     get_watermark_path,
     is_instagram_configured,
     is_tiktok_configured,
@@ -79,6 +81,7 @@ class SettingsUpdateRequest(BaseModel):
     DISCORD_CHANNEL_ID: Optional[str] = None
     DISCORD_USER_ID: Optional[str] = None
     DISCORD_COMMAND_PREFIX: Optional[str] = None
+    DISCORD_BASE_URL: Optional[str] = None
     AUTO_DELETE_ON_REJECT: Optional[bool] = None
 
     TWITCH_CLIENT_ID: Optional[str] = None
@@ -165,6 +168,7 @@ def get_all_settings() -> Dict[str, Any]:
         "DISCORD_CHANNEL_ID": settings.DISCORD_CHANNEL_ID,
         "DISCORD_USER_ID": settings.DISCORD_USER_ID,
         "DISCORD_COMMAND_PREFIX": settings.DISCORD_COMMAND_PREFIX,
+        "DISCORD_BASE_URL": settings.DISCORD_BASE_URL,
         "AUTO_DELETE_ON_REJECT": settings.AUTO_DELETE_ON_REJECT,
         "TWITCH_CLIENT_ID": settings.TWITCH_CLIENT_ID,
         "TWITCH_CLIENT_SECRET": settings.TWITCH_CLIENT_SECRET,
@@ -188,6 +192,8 @@ def get_all_settings() -> Dict[str, Any]:
             "instagram_ready": is_instagram_configured(),
             "watermark_exists": get_watermark_path() is not None,
             "discord": discord_bot.get_status(),
+            "network_endpoints": get_network_endpoints(),
+            "reachable_base_url": get_reachable_base_url(),
             "autoposter_detected": os.path.isdir(r"D:\AutoPoster"),
             "autopost_guard": check_autopost_rate_limit(),
         },
@@ -204,7 +210,7 @@ async def update_settings(req: SettingsUpdateRequest) -> Dict[str, Any]:
         updates["DISCORD_BOT_TOKEN"] = ""
 
     discord_changed = any(
-        k in updates for k in ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_USER_ID")
+        k in updates for k in ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_USER_ID", "DISCORD_BASE_URL")
     )
     stream_sync_needed = any(
         k in updates for k in ("ENGINE_ENABLED", "MAX_CONCURRENT_STREAMS", "PREFER_FACECAM_STREAMS", "PREFER_ENGLISH_STREAMS")

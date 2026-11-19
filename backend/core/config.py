@@ -193,6 +193,7 @@ class Settings:
     DISCORD_CHANNEL_ID: str = _env_str("DISCORD_CHANNEL_ID", "")
     DISCORD_USER_ID: str = _env_str("DISCORD_USER_ID", "")
     DISCORD_COMMAND_PREFIX: str = _env_str("DISCORD_COMMAND_PREFIX", "!")
+    DISCORD_BASE_URL: str = _env_str("DISCORD_BASE_URL", "")
     AUTO_DELETE_ON_REJECT: bool = _env_bool("AUTO_DELETE_ON_REJECT", True)
 
     # Optional Twitch Helix API
@@ -260,6 +261,58 @@ def is_instagram_configured() -> bool:
         settings.INSTAGRAM_BUSINESS_ID
         and settings.PAGE_ACCESS_TOKEN
     )
+
+
+def get_network_endpoints() -> Dict[str, str]:
+    """Detects available network endpoints (LAN, Tailscale, Localhost)."""
+    endpoints = {
+        "localhost": f"http://127.0.0.1:{settings.PORT}",
+    }
+    # Detect LAN IP
+    try:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            lan_ip = s.getsockname()[0]
+            if lan_ip and not lan_ip.startswith("127."):
+                endpoints["lan"] = f"http://{lan_ip}:{settings.PORT}"
+    except Exception:
+        pass
+
+    # Detect Tailscale IP
+    try:
+        import psutil
+        import socket
+        for iface, addrs in psutil.net_if_addrs().items():
+            if "tailscale" in iface.lower():
+                for a in addrs:
+                    if a.family == socket.AF_INET and a.address.startswith("100."):
+                        endpoints["tailscale"] = f"http://{a.address}:{settings.PORT}"
+                        break
+    except Exception:
+        pass
+
+    return endpoints
+
+
+def get_reachable_base_url() -> str:
+    """
+    Returns the most accessible URL for mobile phone review from Discord:
+    1. Explicit DISCORD_BASE_URL if configured in .env / settings.
+    2. Primary LAN IP (e.g. http://192.168.0.175:17430) for home Wi-Fi phone access.
+    3. Tailscale IP if on Tailscale VPN.
+    4. Fallback to 127.0.0.1.
+    """
+    custom = (settings.DISCORD_BASE_URL or "").strip().rstrip("/")
+    if custom.startswith("http://") or custom.startswith("https://"):
+        return custom
+
+    endpoints = get_network_endpoints()
+    if "lan" in endpoints:
+        return endpoints["lan"]
+    if "tailscale" in endpoints:
+        return endpoints["tailscale"]
+    return endpoints["localhost"]
 
 
 def save_settings_to_env(updates: Dict[str, Any]) -> None:

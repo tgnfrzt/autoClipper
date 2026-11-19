@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 import discord
 import httpx
 
-from backend.core.config import settings
+from backend.core.config import get_reachable_base_url, settings
 from backend.core.database import get_clip_by_discord_message, get_db, upsert_streamer
 from backend.modules.processors.video_processor import ensure_discord_attachable_mp4
 from backend.modules.publishers.dispatcher import get_configured_platforms, publish_clip_to_platforms
@@ -170,6 +170,7 @@ class DiscordClipBotService:
 
         if self.has_webhook():
             try:
+                base = get_reachable_base_url()
                 payload = {
                     "username": "GTA VI AI AutoClipper",
                     "embeds": [
@@ -177,9 +178,25 @@ class DiscordClipBotService:
                             "title": "⚡ GTA VI AI AutoClipper Webhook Connected!",
                             "description": (
                                 "New clips will arrive here automatically with the rendered 9:16 video "
-                                "and 1-click **Post All / YouTube / TikTok / Instagram / Reject** action links."
+                                "and interactive **Post All / YouTube / TikTok / Instagram / Reject** buttons below."
                             ),
                             "color": 0x6366F1,
+                            "fields": [
+                                {
+                                    "name": "📱 Mobile Reachable Base URL",
+                                    "value": f"`{base}` (Tap the buttons below to test on your phone)",
+                                    "inline": False,
+                                }
+                            ],
+                        }
+                    ],
+                    "components": [
+                        {
+                            "type": 1,
+                            "components": [
+                                {"type": 2, "style": 5, "label": "🌐 Test Phone Connection", "emoji": {"name": "📱"}, "url": f"{base}/"},
+                                {"type": 2, "style": 5, "label": "AutoClipper Dashboard", "emoji": {"name": "⚡"}, "url": f"{base}/"},
+                            ],
                         }
                     ],
                 }
@@ -219,6 +236,135 @@ class DiscordClipBotService:
             "error": "; ".join(errors) or self._last_error or "Configure a Discord Webhook URL or Bot Token first.",
         }
 
+    def _build_clip_components(self, clip: Dict[str, Any]) -> List[Dict[str, Any]]:
+        base = get_reachable_base_url()
+        clip_id = clip["id"]
+        return [
+            {
+                "type": 1,  # ActionRow 1: Quick Publishing & Reject Buttons
+                "components": [
+                    {
+                        "type": 2,  # Button
+                        "style": 5,  # Link button
+                        "label": "Post All",
+                        "emoji": {"name": "✅"},
+                        "url": f"{base}/api/clips/{clip_id}/quick-action?action=all",
+                    },
+                    {
+                        "type": 2,
+                        "style": 5,
+                        "label": "YouTube",
+                        "emoji": {"name": "▶️"},
+                        "url": f"{base}/api/clips/{clip_id}/quick-action?action=youtube_shorts",
+                    },
+                    {
+                        "type": 2,
+                        "style": 5,
+                        "label": "TikTok",
+                        "emoji": {"name": "🎵"},
+                        "url": f"{base}/api/clips/{clip_id}/quick-action?action=tiktok",
+                    },
+                    {
+                        "type": 2,
+                        "style": 5,
+                        "label": "Instagram",
+                        "emoji": {"name": "📸"},
+                        "url": f"{base}/api/clips/{clip_id}/quick-action?action=instagram",
+                    },
+                    {
+                        "type": 2,
+                        "style": 5,
+                        "label": "Reject",
+                        "emoji": {"name": "❌"},
+                        "url": f"{base}/api/clips/{clip_id}/quick-action?action=reject",
+                    },
+                ],
+            },
+            {
+                "type": 1,  # ActionRow 2: Mobile Review Player & Dashboard
+                "components": [
+                    {
+                        "type": 2,
+                        "style": 5,
+                        "label": "📱 Mobile Review Player",
+                        "url": f"{base}/api/clips/{clip_id}/review",
+                    },
+                    {
+                        "type": 2,
+                        "style": 5,
+                        "label": "🌐 Dashboard",
+                        "url": f"{base}/",
+                    },
+                ],
+            },
+        ]
+
+    def _create_bot_review_view(self, clip_id: str) -> discord.ui.View:
+        base = get_reachable_base_url()
+        view = discord.ui.View(timeout=None)
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="Post All",
+                emoji="✅",
+                url=f"{base}/api/clips/{clip_id}/quick-action?action=all",
+                row=0,
+            )
+        )
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="YouTube",
+                emoji="▶️",
+                url=f"{base}/api/clips/{clip_id}/quick-action?action=youtube_shorts",
+                row=0,
+            )
+        )
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="TikTok",
+                emoji="🎵",
+                url=f"{base}/api/clips/{clip_id}/quick-action?action=tiktok",
+                row=0,
+            )
+        )
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="Instagram",
+                emoji="📸",
+                url=f"{base}/api/clips/{clip_id}/quick-action?action=instagram",
+                row=0,
+            )
+        )
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="Reject",
+                emoji="❌",
+                url=f"{base}/api/clips/{clip_id}/quick-action?action=reject",
+                row=0,
+            )
+        )
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="📱 Mobile Review Player",
+                url=f"{base}/api/clips/{clip_id}/review",
+                row=1,
+            )
+        )
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="🌐 Dashboard",
+                url=f"{base}/",
+                row=1,
+            )
+        )
+        return view
+
     def _build_clip_embed_dict(self, clip: Dict[str, Any]) -> Dict[str, Any]:
         kw_raw = clip.get("chat_keywords")
         if isinstance(kw_raw, str):
@@ -228,15 +374,6 @@ class DiscordClipBotService:
                 kw_list = []
         else:
             kw_list = kw_raw or []
-
-        base = f"http://127.0.0.1:{settings.PORT}/api/clips/{clip['id']}/quick-action"
-        action_links = (
-            f"[✅ **Post All**]({base}?action=all)  •  "
-            f"[▶️ **YouTube**]({base}?action=youtube_shorts)  •  "
-            f"[🎵 **TikTok**]({base}?action=tiktok)  •  "
-            f"[📸 **Instagram**]({base}?action=instagram)  •  "
-            f"[❌ **Reject**]({base}?action=reject)"
-        )
 
         fields: List[Dict[str, Any]] = []
         if clip.get("overlay_caption"):
@@ -258,7 +395,11 @@ class DiscordClipBotService:
                 "inline": False,
             }
         )
-        fields.append({"name": "1-Click Actions (Local Dashboard)", "value": action_links, "inline": False})
+        fields.append({
+            "name": "⚡ Interactive Actions",
+            "value": "Tap the **Buttons below** to Post All, publish to specific platforms, or open the **📱 Mobile Review Player** directly on your phone!",
+            "inline": False,
+        })
 
         return {
             "title": clip.get("ai_title") or f"🔥 {clip['streamer_name']} Clip",
@@ -273,6 +414,7 @@ class DiscordClipBotService:
         raw_path = clip.get("rendered_path") or clip.get("raw_path") or ""
         attach_path = await asyncio.to_thread(ensure_discord_attachable_mp4, raw_path)
         embed_dict = self._build_clip_embed_dict(clip)
+        components = self._build_clip_components(clip)
 
         first_msg_id: Optional[str] = None
         first_ch_id: Optional[str] = None
@@ -285,6 +427,7 @@ class DiscordClipBotService:
                         "username": "GTA VI AI AutoClipper",
                         "content": f"🎬 **New Clip Ready:** {clip.get('overlay_caption') or clip['streamer_name']}",
                         "embeds": [embed_dict],
+                        "components": components,
                     }
                 )
                 async with httpx.AsyncClient(timeout=60.0) as client:
@@ -316,12 +459,13 @@ class DiscordClipBotService:
         if self._connected and self._client:
             targets = await self._resolve_destinations()
             embed = discord.Embed.from_dict(embed_dict)
+            view = self._create_bot_review_view(clip["id"])
             for dest in targets:
                 try:
                     if attach_path and os.path.isfile(attach_path):
-                        msg = await dest.send(embed=embed, file=discord.File(attach_path))
+                        msg = await dest.send(embed=embed, file=discord.File(attach_path), view=view)
                     else:
-                        msg = await dest.send(embed=embed)
+                        msg = await dest.send(embed=embed, view=view)
                     for emoji in ALL_REVIEW_REACTIONS:
                         try:
                             await msg.add_reaction(emoji)
