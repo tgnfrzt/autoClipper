@@ -911,32 +911,19 @@
           </fieldset>
 
           <fieldset>
-            <legend>🤖 Discord Integration (Webhook Recommended — No Bot Required)</legend>
-            <div class="field" style="margin-bottom:0.85rem;">
-              <label for="cfg_DISCORD_WEBHOOK_URL">Discord Webhook URL (Recommended — 1-Click Setup)</label>
-              <div class="input-with-toggle">
-                <input id="cfg_DISCORD_WEBHOOK_URL" name="DISCORD_WEBHOOK_URL" type="password" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
-                <button type="button" class="sm toggle-secret" data-target="cfg_DISCORD_WEBHOOK_URL" aria-pressed="false">Show</button>
-              </div>
-              <span class="hint">In Discord: Channel Settings (⚙️) → Integrations → Webhooks → New Webhook → Copy Webhook URL. Clips include interactive Post All / YouTube / TikTok / Instagram / Reject buttons!</span>
-            </div>
-            <div class="field" style="margin-bottom:0.85rem;">
-              <label for="cfg_DISCORD_BASE_URL">Mobile Review Base URL (Reachable by Phone)</label>
-              <input id="cfg_DISCORD_BASE_URL" name="DISCORD_BASE_URL" type="text" placeholder="Auto-detected LAN (e.g. http://192.168.0.175:17430)" autocomplete="off" spellcheck="false" />
-              <div id="discordUrlHelperPills" style="margin-top:0.35rem; display:flex; gap:0.4rem; flex-wrap:wrap; font-size:0.8rem;"></div>
-              <span class="hint">When you tap interactive buttons on Discord mobile, they connect to this address. Leave blank to auto-use your home Wi-Fi IP (works on any phone on same Wi-Fi). Set to Tailscale or public tunnel when reviewing away from home.</span>
-            </div>
-            <div class="form-grid">
+            <legend>🤖 Discord Integration (Bot Native Buttons Recommended for 4G/5G Mobile)</legend>
+            <div class="form-grid" style="margin-bottom:0.85rem;">
               <div class="field">
-                <label for="cfg_DISCORD_BOT_TOKEN">Optional Discord Bot Token (Only for emoji reactions)</label>
+                <label for="cfg_DISCORD_BOT_TOKEN">Discord Bot Token (Recommended for Mobile 4G/5G — Native Interactive Buttons)</label>
                 <div class="input-with-toggle">
-                  <input id="cfg_DISCORD_BOT_TOKEN" name="DISCORD_BOT_TOKEN" type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+                  <input id="cfg_DISCORD_BOT_TOKEN" name="DISCORD_BOT_TOKEN" type="password" placeholder="Paste Bot Token from Discord Dev Portal..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
                   <button type="button" class="sm toggle-secret" data-target="cfg_DISCORD_BOT_TOKEN" aria-pressed="false">Show</button>
                 </div>
+                <span class="hint">Discord strips native buttons from webhooks. Paste a Bot Token to unlock real green/red native Discord buttons that work anywhere on mobile data. Channel ID is auto-detected from your Webhook URL!</span>
               </div>
               <div class="field">
-                <label for="cfg_DISCORD_CHANNEL_ID">Optional Bot Channel ID</label>
-                <input id="cfg_DISCORD_CHANNEL_ID" name="DISCORD_CHANNEL_ID" type="text" inputmode="numeric" autocorrect="off" spellcheck="false" />
+                <label for="cfg_DISCORD_CHANNEL_ID">Bot Channel ID (Auto-detected if Webhook is set)</label>
+                <input id="cfg_DISCORD_CHANNEL_ID" name="DISCORD_CHANNEL_ID" type="text" placeholder="Optional if Webhook URL is filled" inputmode="numeric" autocorrect="off" spellcheck="false" />
               </div>
               <div class="field">
                 <label for="cfg_DISCORD_USER_ID">Optional Bot User ID (DM)</label>
@@ -947,10 +934,24 @@
                 <input id="cfg_DISCORD_COMMAND_PREFIX" name="DISCORD_COMMAND_PREFIX" type="text" maxlength="4" />
               </div>
             </div>
+            <div class="field" style="margin-bottom:0.85rem;">
+              <label for="cfg_DISCORD_WEBHOOK_URL">Discord Webhook URL (Zero-Bot Fallback — Wi-Fi / Tailscale Links)</label>
+              <div class="input-with-toggle">
+                <input id="cfg_DISCORD_WEBHOOK_URL" name="DISCORD_WEBHOOK_URL" type="password" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+                <button type="button" class="sm toggle-secret" data-target="cfg_DISCORD_WEBHOOK_URL" aria-pressed="false">Show</button>
+              </div>
+              <span class="hint">In Discord: Channel Settings (⚙️) → Integrations → Webhooks → Copy Webhook URL. Used automatically as fallback (and to auto-detect your Channel ID for Bot mode).</span>
+            </div>
+            <div class="field" style="margin-bottom:0.85rem;">
+              <label for="cfg_DISCORD_BASE_URL">Mobile Review Base URL (For Webhook Links — Reachable by Phone)</label>
+              <input id="cfg_DISCORD_BASE_URL" name="DISCORD_BASE_URL" type="text" placeholder="Auto-detected LAN (e.g. http://192.168.0.175:17430)" autocomplete="off" spellcheck="false" />
+              <div id="discordUrlHelperPills" style="margin-top:0.35rem; display:flex; gap:0.4rem; flex-wrap:wrap; font-size:0.8rem;"></div>
+              <span class="hint">Used for Webhook fallback links only (Bot native buttons work anywhere over Discord with zero open ports).</span>
+            </div>
             <div class="toolbar-group" style="margin-top:0.75rem;">
               <label class="check-row"><input type="checkbox" id="cfg_AUTO_DELETE_ON_REJECT" name="AUTO_DELETE_ON_REJECT" /> Auto-delete local files when ❌ rejected</label>
               <button type="button" id="btnTestDiscord">📨 Send Test Message to Discord</button>
-              <span class="hint">Webhook: 1-Click Links • Bot: ✅ / ▶️ / 🎵 / 📸 / ❌ Reactions</span>
+              <span class="hint">Bot: Native 4G/5G Interactive Buttons • Webhook: Wi-Fi / Tailscale Fallback Links</span>
             </div>
           </fieldset>
 

@@ -7,7 +7,7 @@ import discord
 import httpx
 
 from backend.core.config import get_reachable_base_url, settings
-from backend.core.database import get_clip_by_discord_message, get_db, upsert_streamer
+from backend.core.database import get_clip, get_clip_by_discord_message, get_db, upsert_streamer
 from backend.modules.processors.video_processor import ensure_discord_attachable_mp4
 from backend.modules.publishers.dispatcher import get_configured_platforms, publish_clip_to_platforms
 
@@ -42,6 +42,7 @@ class DiscordClipBotService:
         self._message_intent_enabled: bool = True
         self._processing_msgs: set[str] = set()
         self._stream_manager: Any = None
+        self._webhook_channel_id: str = ""
 
     def attach_stream_manager(self, manager: Any) -> None:
         self._stream_manager = manager
@@ -53,15 +54,32 @@ class DiscordClipBotService:
     def _webhook_base_url(self) -> str:
         return (settings.DISCORD_WEBHOOK_URL or "").strip().split("?")[0].rstrip("/")
 
+    async def _resolve_webhook_channel_id(self) -> str:
+        if self._webhook_channel_id:
+            return self._webhook_channel_id
+        if not self.has_webhook():
+            return ""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(self._webhook_base_url())
+                if r.status_code == 200:
+                    cid = str(r.json().get("channel_id") or "")
+                    if cid:
+                        self._webhook_channel_id = cid
+                        return cid
+        except Exception:
+            pass
+        return ""
+
     def get_status(self) -> Dict[str, Any]:
         wh = self.has_webhook()
-        mode = "webhook" if wh else ("bot" if self._connected else "none")
+        mode = "bot" if self._connected else ("webhook" if wh else "none")
         if wh and self._connected:
             mode = "webhook+bot"
         return {
             "webhook_configured": wh,
             "has_token": bool(settings.DISCORD_BOT_TOKEN),
-            "channel_id": settings.DISCORD_CHANNEL_ID,
+            "channel_id": settings.DISCORD_CHANNEL_ID or self._webhook_channel_id,
             "user_id": settings.DISCORD_USER_ID,
             "connected": self._connected,
             "bot_user": self._bot_user,
@@ -73,6 +91,7 @@ class DiscordClipBotService:
 
     async def start_or_restart(self) -> None:
         self._last_error = ""
+        self._webhook_channel_id = ""
         await self.stop()
         token = (settings.DISCORD_BOT_TOKEN or "").strip()
         if not token:
@@ -113,6 +132,14 @@ class DiscordClipBotService:
                 print(f"[DiscordBot] Logged in as {client.user}")
 
             @client.event
+            async def on_interaction(interaction: discord.Interaction):
+                if interaction.type == discord.InteractionType.component:
+                    data = interaction.data or {}
+                    cid = str(data.get("custom_id") or "")
+                    if cid.startswith("ac:"):
+                        await self._handle_button_interaction(interaction, cid)
+
+            @client.event
             async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                 if client.user and payload.user_id == client.user.id:
                     return
@@ -145,9 +172,12 @@ class DiscordClipBotService:
         if not self._client or not self._connected:
             return []
         targets: List[Any] = []
-        if settings.DISCORD_CHANNEL_ID:
+        raw_cid = (settings.DISCORD_CHANNEL_ID or "").strip()
+        if not raw_cid and self.has_webhook():
+            raw_cid = await self._resolve_webhook_channel_id()
+        if raw_cid:
             try:
-                cid = int(settings.DISCORD_CHANNEL_ID.strip())
+                cid = int(raw_cid)
                 ch = self._client.get_channel(cid) or await self._client.fetch_channel(cid)
                 if ch:
                     targets.append(ch)
@@ -168,7 +198,37 @@ class DiscordClipBotService:
         sent_count = 0
         errors: List[str] = []
 
-        if self.has_webhook():
+        if self._connected and self._client:
+            targets = await self._resolve_destinations()
+            if not targets:
+                errors.append(
+                    self._last_error
+                    or "Bot connected, but no destination channel found. Set Channel ID or Webhook URL (auto-detects channel)."
+                )
+            for t in targets:
+                try:
+                    preview = discord.ui.View(timeout=None)
+                    preview.add_item(discord.ui.Button(style=discord.ButtonStyle.success, label="Post All", emoji="✅", disabled=True, row=0))
+                    preview.add_item(discord.ui.Button(style=discord.ButtonStyle.secondary, label="YouTube", emoji="▶️", disabled=True, row=0))
+                    preview.add_item(discord.ui.Button(style=discord.ButtonStyle.secondary, label="TikTok", emoji="🎵", disabled=True, row=0))
+                    preview.add_item(discord.ui.Button(style=discord.ButtonStyle.secondary, label="Instagram", emoji="📸", disabled=True, row=0))
+                    preview.add_item(discord.ui.Button(style=discord.ButtonStyle.danger, label="Reject", emoji="❌", disabled=True, row=0))
+                    await t.send(
+                        embed=discord.Embed(
+                            title="⚡ GTA VI AI AutoClipper Bot Connected!",
+                            description=(
+                                "Native interactive Discord buttons are active and work anywhere on mobile data (4G/5G)!\n"
+                                "Real clips will arrive with active **Post All / YouTube / TikTok / Instagram / Reject** buttons below."
+                            ),
+                            color=0x10B981,
+                        ),
+                        view=preview,
+                    )
+                    sent_count += 1
+                except Exception as exc:
+                    errors.append(f"Bot send error: {exc}")
+
+        if sent_count == 0 and self.has_webhook():
             try:
                 base = get_reachable_base_url()
                 payload = {
@@ -177,8 +237,8 @@ class DiscordClipBotService:
                         {
                             "title": "⚡ GTA VI AI AutoClipper Webhook Connected!",
                             "description": (
-                                "New clips will arrive here automatically with the rendered 9:16 video "
-                                "and interactive **Post All / YouTube / TikTok / Instagram / Reject** buttons below."
+                                "New clips will arrive here with touch action links (same Wi-Fi / Tailscale). "
+                                "Note: Discord strips native component buttons from incoming webhooks — add a **Discord Bot Token** in Configure for native buttons on 4G/5G."
                             ),
                             "color": 0x6366F1,
                             "fields": [
@@ -194,15 +254,6 @@ class DiscordClipBotService:
                             ],
                         }
                     ],
-                    "components": [
-                        {
-                            "type": 1,
-                            "components": [
-                                {"type": 2, "style": 5, "label": "🌐 Test Phone Connection", "emoji": {"name": "📱"}, "url": f"{base}/"},
-                                {"type": 2, "style": 5, "label": "AutoClipper Dashboard", "emoji": {"name": "⚡"}, "url": f"{base}/"},
-                            ],
-                        }
-                    ],
                 }
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     r = await client.post(f"{self._webhook_base_url()}?wait=true", json=payload)
@@ -213,31 +264,12 @@ class DiscordClipBotService:
             except Exception as exc:
                 errors.append(f"Webhook error: {exc}")
 
-        if self._connected and self._client:
-            targets = await self._resolve_destinations()
-            for t in targets:
-                try:
-                    await t.send(
-                        embed=discord.Embed(
-                            title="⚡ GTA VI AI AutoClipper Bot Connected!",
-                            description=(
-                                "Clips will appear here automatically.\n"
-                                f"{REACTION_APPROVE_ALL} All • {REACTION_YOUTUBE} YouTube • "
-                                f"{REACTION_TIKTOK} TikTok • {REACTION_INSTAGRAM} Instagram • {REACTION_REJECT} Delete"
-                            ),
-                            color=0x6366F1,
-                        )
-                    )
-                    sent_count += 1
-                except Exception as exc:
-                    errors.append(f"Bot send error: {exc}")
-
         if sent_count > 0:
             self._last_error = ""
             return {"ok": True, "sent_to": sent_count, "mode": self.get_status()["mode"]}
         return {
             "ok": False,
-            "error": "; ".join(errors) or self._last_error or "Configure a Discord Webhook URL or Bot Token first.",
+            "error": "; ".join(errors) or self._last_error or "Configure a Discord Bot Token or Webhook URL first.",
         }
 
     def _build_clip_components(self, clip: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -303,73 +335,70 @@ class DiscordClipBotService:
             },
         ]
 
-    def _create_bot_review_view(self, clip_id: str) -> discord.ui.View:
-        base = get_reachable_base_url()
+    def _create_bot_review_view(
+        self,
+        clip_id: str,
+        posted_platforms: Optional[set[str]] = None,
+        rejected: bool = False,
+    ) -> discord.ui.View:
+        posted = posted_platforms or set()
+        configured = set(get_configured_platforms())
+        all_done = rejected or (bool(configured) and configured.issubset(posted))
+
         view = discord.ui.View(timeout=None)
         view.add_item(
             discord.ui.Button(
-                style=discord.ButtonStyle.link,
+                style=discord.ButtonStyle.success,
                 label="Post All",
                 emoji="✅",
-                url=f"{base}/api/clips/{clip_id}/quick-action?action=all",
+                custom_id=f"ac:all:{clip_id}",
+                disabled=all_done,
                 row=0,
             )
         )
         view.add_item(
             discord.ui.Button(
-                style=discord.ButtonStyle.link,
+                style=discord.ButtonStyle.success if "youtube_shorts" in posted else discord.ButtonStyle.secondary,
                 label="YouTube",
                 emoji="▶️",
-                url=f"{base}/api/clips/{clip_id}/quick-action?action=youtube_shorts",
+                custom_id=f"ac:youtube_shorts:{clip_id}",
+                disabled=rejected or ("youtube_shorts" in posted),
                 row=0,
             )
         )
         view.add_item(
             discord.ui.Button(
-                style=discord.ButtonStyle.link,
+                style=discord.ButtonStyle.success if "tiktok" in posted else discord.ButtonStyle.secondary,
                 label="TikTok",
                 emoji="🎵",
-                url=f"{base}/api/clips/{clip_id}/quick-action?action=tiktok",
+                custom_id=f"ac:tiktok:{clip_id}",
+                disabled=rejected or ("tiktok" in posted),
                 row=0,
             )
         )
         view.add_item(
             discord.ui.Button(
-                style=discord.ButtonStyle.link,
+                style=discord.ButtonStyle.success if "instagram" in posted else discord.ButtonStyle.secondary,
                 label="Instagram",
                 emoji="📸",
-                url=f"{base}/api/clips/{clip_id}/quick-action?action=instagram",
+                custom_id=f"ac:instagram:{clip_id}",
+                disabled=rejected or ("instagram" in posted),
                 row=0,
             )
         )
         view.add_item(
             discord.ui.Button(
-                style=discord.ButtonStyle.link,
+                style=discord.ButtonStyle.danger,
                 label="Reject",
                 emoji="❌",
-                url=f"{base}/api/clips/{clip_id}/quick-action?action=reject",
+                custom_id=f"ac:reject:{clip_id}",
+                disabled=rejected,
                 row=0,
-            )
-        )
-        view.add_item(
-            discord.ui.Button(
-                style=discord.ButtonStyle.link,
-                label="📱 Mobile Review Player",
-                url=f"{base}/api/clips/{clip_id}/review",
-                row=1,
-            )
-        )
-        view.add_item(
-            discord.ui.Button(
-                style=discord.ButtonStyle.link,
-                label="🌐 Dashboard",
-                url=f"{base}/",
-                row=1,
             )
         )
         return view
 
-    def _build_clip_embed_dict(self, clip: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_clip_embed_dict(self, clip: Dict[str, Any], include_webhook_links: bool = True) -> Dict[str, Any]:
         kw_raw = clip.get("chat_keywords")
         if isinstance(kw_raw, str):
             try:
@@ -399,21 +428,28 @@ class DiscordClipBotService:
                 "inline": False,
             }
         )
-        base = get_reachable_base_url()
-        clip_id = clip["id"]
-        action_buttons_md = (
-            f"🚀 **[  ✅ POST ALL PLATFORMS  ]({base}/api/clips/{clip_id}/quick-action?action=all)**\n\n"
-            f"▶️ **[  YouTube Shorts  ]({base}/api/clips/{clip_id}/quick-action?action=youtube_shorts)**  •  "
-            f"🎵 **[  TikTok  ]({base}/api/clips/{clip_id}/quick-action?action=tiktok)**  •  "
-            f"📸 **[  Instagram  ]({base}/api/clips/{clip_id}/quick-action?action=instagram)**\n\n"
-            f"🗑️ **[  ❌ Reject & Delete  ]({base}/api/clips/{clip_id}/quick-action?action=reject)**\n\n"
-            f"📱 **[  🎬 OPEN MOBILE REVIEW PLAYER  ]({base}/api/clips/{clip_id}/review)**"
-        )
-        fields.append({
-            "name": "⚡ 1-Click Phone Actions",
-            "value": action_buttons_md,
-            "inline": False,
-        })
+        if include_webhook_links:
+            base = get_reachable_base_url()
+            clip_id = clip["id"]
+            action_buttons_md = (
+                f"🚀 **[  ✅ POST ALL PLATFORMS  ]({base}/api/clips/{clip_id}/quick-action?action=all)**\n\n"
+                f"▶️ **[  YouTube Shorts  ]({base}/api/clips/{clip_id}/quick-action?action=youtube_shorts)**  •  "
+                f"🎵 **[  TikTok  ]({base}/api/clips/{clip_id}/quick-action?action=tiktok)**  •  "
+                f"📸 **[  Instagram  ]({base}/api/clips/{clip_id}/quick-action?action=instagram)**\n\n"
+                f"🗑️ **[  ❌ Reject & Delete  ]({base}/api/clips/{clip_id}/quick-action?action=reject)**\n\n"
+                f"📱 **[  🎬 OPEN MOBILE REVIEW PLAYER  ]({base}/api/clips/{clip_id}/review)**"
+            )
+            fields.append({
+                "name": "⚡ 1-Click Phone Actions",
+                "value": action_buttons_md,
+                "inline": False,
+            })
+        else:
+            fields.append({
+                "name": "⚡ Interactive Controls",
+                "value": "Tap the native interactive buttons below to **Post All**, pick a platform, or **Reject** — works anywhere on mobile data!",
+                "inline": False,
+            })
 
         return {
             "title": clip.get("ai_title") or f"🔥 {clip['streamer_name']} Clip",
@@ -427,17 +463,35 @@ class DiscordClipBotService:
     async def send_clip_for_review(self, clip: Dict[str, Any]) -> Optional[str]:
         raw_path = clip.get("rendered_path") or clip.get("raw_path") or ""
         attach_path = await asyncio.to_thread(ensure_discord_attachable_mp4, raw_path)
-        embed_dict = self._build_clip_embed_dict(clip)
-        components = self._build_clip_components(clip)
-        base = get_reachable_base_url()
         clip_id = clip["id"]
 
         first_msg_id: Optional[str] = None
         first_ch_id: Optional[str] = None
 
-        # 1. Discord Webhook (Primary / Zero-Bot Setup)
-        if self.has_webhook():
+        # 1. Preferred: Discord Bot with True Native Interactive Buttons (works anywhere on 4G/5G)
+        if self._connected and self._client:
+            targets = await self._resolve_destinations()
+            embed = discord.Embed.from_dict(self._build_clip_embed_dict(clip, include_webhook_links=False))
+            view = self._create_bot_review_view(clip_id)
+            content_bot = f"🎬 **New Clip Ready:** {clip.get('overlay_caption') or clip['streamer_name']}"
+            for dest in targets:
+                try:
+                    if attach_path and os.path.isfile(attach_path):
+                        msg = await dest.send(content=content_bot, embed=embed, file=discord.File(attach_path), view=view)
+                    else:
+                        msg = await dest.send(content=content_bot, embed=embed, view=view)
+                    if not first_msg_id:
+                        first_msg_id = str(msg.id)
+                        first_ch_id = str(msg.channel.id)
+                        self._last_error = ""
+                except Exception as exc:
+                    self._last_error = f"Bot send error: {exc}"
+
+        # 2. Fallback: Discord Webhook (Zero-Bot Setup using Wi-Fi / Tailscale action links)
+        if not first_msg_id and self.has_webhook():
             try:
+                base = get_reachable_base_url()
+                embed_dict = self._build_clip_embed_dict(clip, include_webhook_links=True)
                 content_text = (
                     f"🎬 **New Clip Ready: {clip.get('overlay_caption') or clip['streamer_name']}**\n"
                     f"> 🚀 **[  ✅ POST ALL  ]({base}/api/clips/{clip_id}/quick-action?action=all)**  •  "
@@ -449,7 +503,6 @@ class DiscordClipBotService:
                         "username": "GTA VI AI AutoClipper",
                         "content": content_text,
                         "embeds": [embed_dict],
-                        "components": components,
                     }
                 )
                 async with httpx.AsyncClient(timeout=60.0) as client:
@@ -477,50 +530,169 @@ class DiscordClipBotService:
             except Exception as exc:
                 self._last_error = f"Webhook send error: {exc}"
 
-        # 2. Optional Discord Bot (if also configured)
-        if self._connected and self._client:
-            targets = await self._resolve_destinations()
-            embed = discord.Embed.from_dict(embed_dict)
-            view = self._create_bot_review_view(clip["id"])
-            for dest in targets:
-                try:
-                    if attach_path and os.path.isfile(attach_path):
-                        msg = await dest.send(embed=embed, file=discord.File(attach_path), view=view)
-                    else:
-                        msg = await dest.send(embed=embed, view=view)
-                    for emoji in ALL_REVIEW_REACTIONS:
-                        try:
-                            await msg.add_reaction(emoji)
-                        except Exception:
-                            pass
-                    if not first_msg_id:
-                        first_msg_id = str(msg.id)
-                        first_ch_id = str(msg.channel.id)
-                except Exception as exc:
-                    self._last_error = f"Bot send error: {exc}"
-
         if first_msg_id:
             conn = get_db()
             with conn:
                 conn.execute(
                     "UPDATE clips SET discord_message_id = ?, discord_channel_id = ? WHERE id = ?",
-                    (first_msg_id, first_ch_id or "", clip["id"]),
+                    (first_msg_id, first_ch_id or "", clip_id),
                 )
             conn.close()
         return first_msg_id
 
     async def update_webhook_message_status(self, discord_message_id: str, status_text: str) -> None:
-        """Edits the webhook message content in-place to show live publish/reject status."""
-        if not self.has_webhook() or not discord_message_id:
+        """Edits the Discord message content in-place (Bot channel message or Webhook) to show live publish/reject status."""
+        if not discord_message_id:
             return
         try:
-            async with httpx.AsyncClient(timeout=12.0) as client:
-                await client.patch(
-                    f"{self._webhook_base_url()}/messages/{discord_message_id}",
-                    json={"content": status_text[:1900]},
-                )
+            clip = get_clip_by_discord_message(discord_message_id)
+            ch_id_raw = str((clip or {}).get("discord_channel_id") or "")
+            if ch_id_raw.isdigit() and self._connected and self._client:
+                try:
+                    cid = int(ch_id_raw)
+                    channel = self._client.get_channel(cid) or await self._client.fetch_channel(cid)
+                    if channel:
+                        msg = await channel.fetch_message(int(discord_message_id))
+                        await msg.edit(content=status_text[:1900])
+                        return
+                except Exception:
+                    pass
+            if self.has_webhook():
+                async with httpx.AsyncClient(timeout=12.0) as client:
+                    await client.patch(
+                        f"{self._webhook_base_url()}/messages/{discord_message_id}",
+                        json={"content": status_text[:1900]},
+                    )
         except Exception:
             pass
+
+    async def _handle_button_interaction(self, interaction: discord.Interaction, custom_id: str) -> None:
+        parts = custom_id.split(":", 2)
+        if len(parts) != 3:
+            return
+        _, action, clip_id = parts
+        clip = get_clip(clip_id)
+        if not clip:
+            await interaction.response.send_message(f"⚠️ Clip `{clip_id}` no longer exists.", ephemeral=True)
+            return
+
+        lock_key = f"btn:{clip_id}:{action}"
+        if lock_key in self._processing_msgs:
+            await interaction.response.send_message("⏳ Action already in progress for this clip.", ephemeral=True)
+            return
+
+        self._processing_msgs.add(lock_key)
+        try:
+            await interaction.response.defer(ephemeral=True)
+
+            if action == "reject":
+                conn = get_db()
+                with conn:
+                    conn.execute("UPDATE clips SET status = 'rejected' WHERE id = ?", (clip_id,))
+                conn.close()
+                if settings.AUTO_DELETE_ON_REJECT:
+                    for p in (clip.get("raw_path"), clip.get("rendered_path"), clip.get("thumb_path")):
+                        if p and os.path.isfile(p):
+                            try:
+                                os.remove(p)
+                            except Exception:
+                                pass
+                if interaction.message:
+                    try:
+                        await interaction.message.edit(
+                            content=f"🗑️ **Clip `{clip_id}` rejected and deleted.**",
+                            view=self._create_bot_review_view(clip_id, rejected=True),
+                        )
+                    except Exception:
+                        pass
+                await interaction.followup.send(f"🗑️ Clip `{clip_id}` rejected and cleaned up.", ephemeral=True)
+                return
+
+            if action == "all":
+                platforms = get_configured_platforms()
+                if not platforms:
+                    await interaction.followup.send("⚠️ No social platforms are configured yet. Open Web UI > Configure.", ephemeral=True)
+                    return
+            elif action in ("youtube_shorts", "tiktok", "instagram"):
+                platforms = [action]
+            else:
+                await interaction.followup.send(f"⚠️ Unknown action `{action}`.", ephemeral=True)
+                return
+
+            conn = get_db()
+            existing_rows = conn.execute(
+                "SELECT platform, post_url FROM post_history WHERE clip_id = ? AND status = 'posted' ORDER BY published_at DESC",
+                (clip_id,),
+            ).fetchall()
+            already_posted: Dict[str, str] = {}
+            for er in existing_rows:
+                if er["platform"] not in already_posted:
+                    already_posted[er["platform"]] = er["post_url"] or ""
+            pending = [p for p in platforms if p not in already_posted]
+
+            if not pending:
+                conn.close()
+                if interaction.message:
+                    try:
+                        await interaction.message.edit(
+                            view=self._create_bot_review_view(clip_id, posted_platforms=set(already_posted.keys()))
+                        )
+                    except Exception:
+                        pass
+                done_lines = [
+                    f"✅ **{p.upper()}**: Already Posted! {already_posted[p]}".strip()
+                    for p in platforms
+                ]
+                await interaction.followup.send("\n".join(done_lines), ephemeral=True)
+                return
+
+            with conn:
+                conn.execute("UPDATE clips SET status = 'accepted' WHERE id = ?", (clip_id,))
+            conn.close()
+
+            if interaction.message:
+                try:
+                    await interaction.message.edit(
+                        content=f"⏳ **Publishing `{clip_id}` to {', '.join(pending)}...**"
+                    )
+                except Exception:
+                    pass
+
+            res = await asyncio.to_thread(publish_clip_to_platforms, clip_id, pending)
+
+            conn = get_db()
+            posted_rows = conn.execute(
+                "SELECT DISTINCT platform FROM post_history WHERE clip_id = ? AND status = 'posted'",
+                (clip_id,),
+            ).fetchall()
+            conn.close()
+            posted_set = {r["platform"] for r in posted_rows}
+
+            lines = [
+                f"✅ **{item.get('platform', '').upper()}**: Posted! {item.get('post_url', '')}".strip()
+                if item.get("success")
+                else f"❌ **{item.get('platform', '').upper()}**: {item.get('error', 'Failed')}"
+                for item in res.get("results", [])
+            ]
+            summary = "\n".join(lines) or "Finished publishing."
+
+            if interaction.message:
+                try:
+                    await interaction.message.edit(
+                        content=summary[:1900],
+                        view=self._create_bot_review_view(clip_id, posted_platforms=posted_set),
+                    )
+                except Exception:
+                    pass
+            await interaction.followup.send(summary[:1900], ephemeral=True)
+        except Exception as exc:
+            print(f"[DiscordBot] Button interaction error: {exc}")
+            try:
+                await interaction.followup.send(f"❌ Error processing button: {exc}", ephemeral=True)
+            except Exception:
+                pass
+        finally:
+            self._processing_msgs.discard(lock_key)
 
     async def _handle_reaction(self, payload: discord.RawReactionActionEvent) -> None:
         emoji = str(payload.emoji)
